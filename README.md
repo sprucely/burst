@@ -1,9 +1,9 @@
-# upon
+# burst
 
-[![Crates.io](https://img.shields.io/crates/v/upon.svg)](https://crates.io/crates/upon)
-[![Docs.rs](https://docs.rs/upon/badge.svg)](https://docs.rs/upon)
-[![CI](https://github.com/sprucely/upon/workflows/CI/badge.svg)](https://github.com/sprucely/upon/actions)
-[![Coverage Status](https://coveralls.io/repos/github/sprucely/upon/badge.svg?branch=main)](https://coveralls.io/github/sprucely/upon?branch=main)
+[![Crates.io](https://img.shields.io/crates/v/burst.svg)](https://crates.io/crates/burst)
+[![Docs.rs](https://docs.rs/burst/badge.svg)](https://docs.rs/burst)
+[![CI](https://github.com/sprucely/burst/workflows/CI/badge.svg)](https://github.com/sprucely/burst/actions)
+[![Coverage Status](https://coveralls.io/repos/github/sprucely/burst/badge.svg?branch=main)](https://coveralls.io/github/sprucely/burst?branch=main)
 
 ## Installation
 
@@ -11,7 +11,7 @@
 
 * Install the rust toolchain in order to have cargo installed by following
   [this](https://www.rust-lang.org/tools/install) guide.
-* run `cargo install upon`
+* run `cargo install burst`
 
 ## License
 

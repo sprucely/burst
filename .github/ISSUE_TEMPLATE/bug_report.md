@@ -35,7 +35,7 @@ Steps to reproduce the behavior:
 <!-- Please fill the following information. -->
 
 - OS: [e.g. Ubuntu 20.04]
-- upon version: [e.g. 0.1.0]
+- burst version: [e.g. 0.1.0]
 
 ## Additional context
 
