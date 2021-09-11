@@ -1,15 +1,18 @@
+#![allow(dead_code)]
+
 mod data;
+mod ops;
 
 fn main() {
-  let mut data = crate::data::Data {
+  let mut val = crate::data::Value {
     bytes: [3, 0, 1, 5, 0, 0, 0, 0],
   };
   {
-    let a = data.as_u8_mut();
+    let a = val.as_u8_mut();
     *a += 1;
   }
-  let b = data.as_u8();
+  let b = val.as_u8();
 
-  println!("{:?}", data);
+  println!("{:?}", val);
   println!("{:?}", b);
 }
