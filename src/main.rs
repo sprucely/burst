@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-
+#![recursion_limit = "512"]
 mod data;
 mod ops;
 

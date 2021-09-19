@@ -1,7 +1,6 @@
 use core::cmp::Ordering;
 use paste::paste;
 
-#[macro_export]
 macro_rules! val_as {
   ($($type_name:ty)+) => {
     paste! {
@@ -41,11 +40,11 @@ impl PartialOrd for Value {
 }
 
 // array types are not accepted as macro type/ty arguments, so give them an alias...
-type U16X4 = [u16; 4];
-type U32X2 = [u32; 2];
-type I16X4 = [i16; 4];
-type I32X2 = [i32; 2];
-type F32X2 = [f32; 2];
+pub type U16X4 = [u16; 4];
+pub type U32X2 = [u32; 2];
+pub type I16X4 = [i16; 4];
+pub type I32X2 = [i32; 2];
+pub type F32X2 = [f32; 2];
 
 impl Value {
   val_as!(u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 U16X4 U32X2 I16X4 I32X2 F32X2);
