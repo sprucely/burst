@@ -1,10 +1,18 @@
 #![allow(dead_code)]
 #![recursion_limit = "512"]
-mod data;
-mod ops;
+
+#[macro_use]
+extern crate lalrpop_util;
+lalrpop_mod!(pub grammar); // synthesized by LALRPOP
+
+mod component;
+mod interpreter;
+// mod data;
+// mod ops;
+mod parser;
 
 fn main() {
-  let mut val = crate::data::Value {
+  /*  let mut val = crate::data::Value {
     bytes: [3, 0, 1, 5, 0, 0, 0, 0],
   };
   {
@@ -14,5 +22,5 @@ fn main() {
   let b = val.as_u8();
 
   println!("{:?}", val);
-  println!("{:?}", b);
+  println!("{:?}", b);*/
 }
