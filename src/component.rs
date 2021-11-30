@@ -1,5 +1,6 @@
 use bitflags::bitflags;
 use petgraph::graph::Graph;
+use petgraph::graph::NodeIndex;
 
 /*
 ComponentGraph
@@ -43,10 +44,19 @@ bitflags! {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CellType {
-  Relay,
-  OneShot,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Node {
+  Cell(Cell),
+  Link(Link),
+}
+
+// component signaling occurs indirectly (no &Cell) in order to keep graphs simple and isolated
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Link {
+  pub to_component_id: String,
+  pub to_component_instance_id: String,
+  pub to_cell_index: NodeIndex,
+  pub from_cell: Cell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,6 +107,12 @@ impl Cell {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CellType {
+  Relay,
+  OneShot,
+}
+
 // #[derive(Debug, Clone)]
 // pub struct CellInfo {
 //   pub name: String,
@@ -111,6 +127,7 @@ pub enum Synapse {
 
 #[derive(Debug, Clone)]
 pub struct Component {
+  pub id: String,
   pub graph: Graph<Cell, Synapse>,
   // cell_info_map: HashMap<String, CellInfo>,
 }
@@ -118,6 +135,7 @@ pub struct Component {
 impl Component {
   pub fn new() -> Self {
     Component {
+      id: cuid::cuid().unwrap(),
       graph: Graph::new(),
       // cell_info_map: HashMap::new(),
     }

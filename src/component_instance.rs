@@ -3,23 +3,38 @@ use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
 
-pub struct Interpreter {
-  root_component: Component,
+pub struct ComponentInstance {
+  pub id: String,
+  component: Component,
   fired_cells: Vec<NodeIndex>,
   processing_cells: Vec<NodeIndex>,
   staging_cells: Vec<NodeIndex>,
-  clock_cycle: u32,
+  clock_cycle: usize,
 }
 
-impl Interpreter {
-  fn new(root_component: Component, init_cells: &[NodeIndex]) -> Interpreter {
-    Interpreter {
-      root_component: root_component,
+// TODO: Consider optimization stragies - Cells and their operands should be grouped by component for cache locality
+// Component instance could maintain it's own execution state
+// - Orchestrator would need to maintain a topologically sorted (for shared parent/child data) list of component instances with staged cells
+// - Component instance would need a way to change it's active status
+
+impl ComponentInstance {
+  pub fn new(component: &Component, init_cells: &[NodeIndex]) -> ComponentInstance {
+    ComponentInstance {
+      id: cuid::cuid().unwrap(),
+      component: component.clone(),
       fired_cells: Vec::new(),
       processing_cells: Vec::new(),
       staging_cells: init_cells.to_vec(),
       clock_cycle: 0,
     }
+  }
+
+  pub fn is_active(&self) -> bool {
+    self.staging_cells.len() > 0 || self.fired_cells.len() > 0
+  }
+
+  pub fn run(&mut self) {
+    while self.step() {}
   }
 
   pub fn step(&mut self) -> bool {
@@ -34,13 +49,9 @@ impl Interpreter {
     return self.fired_cells.len() > 0;
   }
 
-  pub fn run(&mut self) {
-    while self.step() {}
-  }
-
   fn process_fired_cells(&mut self) {
     // Set connected signal flags according to connections
-    let graph = &mut self.root_component.graph;
+    let graph = &mut self.component.graph;
     for cell_index in self.fired_cells.iter() {
       let mut edges = graph
         .neighbors_directed(*cell_index, Direction::Outgoing)
@@ -60,7 +71,7 @@ impl Interpreter {
 
   fn stage_connected_cells(&mut self) {
     // Stage connected cells that are not already staged
-    let graph = &mut self.root_component.graph;
+    let graph = &mut self.component.graph;
     for cell_index in self.fired_cells.iter() {
       trace!("staging connections of {:?}", cell_index);
       let mut edges = graph
@@ -81,7 +92,7 @@ impl Interpreter {
   }
 
   fn run_processing_cells(&mut self) {
-    let graph = &mut self.root_component.graph;
+    let graph = &mut self.component.graph;
     for cell_index in self.processing_cells.iter() {
       let cell = graph.node_weight_mut(*cell_index).unwrap();
       trace!("running {:?}", cell_index);
@@ -120,10 +131,10 @@ mod tests {
       .graph
       .add_edge(cell_b, cell_d, Synapse::Connection { signal_bit: 0 });
     let init_cells = [cell_a];
-    let mut interpreter = Interpreter::new(component, &init_cells);
-    interpreter.run();
+    let mut instance = ComponentInstance::new(&component, &init_cells);
+    instance.run();
 
     //assert!(super::grammar::TermParser::new().parse("22").is_ok());
-    assert_eq!(interpreter.clock_cycle, 4);
+    assert_eq!(instance.clock_cycle, 4);
   }
 }
