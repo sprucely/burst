@@ -45,45 +45,58 @@ bitflags! {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Node {
-  Cell(Cell),
-  Link(Link),
+pub struct CellRef {
+  pub to_component_id: Option<String>,
+  pub to_component_instance_id: Option<String>,
+  pub to_cell_index: Option<NodeIndex>,
 }
 
-// component signaling occurs indirectly (no &Cell) in order to keep graphs simple and isolated
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Link {
-  pub to_component_id: String,
-  pub to_component_instance_id: String,
-  pub to_cell_index: NodeIndex,
-  pub from_cell: Cell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Cell {
   tp: CellType,
   pub flags: CellFlags,
   pub signals: u32,
+  // references cell in other component instance
+  pub link: Option<CellRef>,
 }
 
 impl Cell {
-  pub fn new(tp: CellType) -> Self {
+  fn new(tp: CellType) -> Self {
     Self {
+      tp: tp,
       flags: CellFlags::empty(),
       signals: 0,
-      tp: tp,
+      link: None,
     }
+  }
+
+  pub fn relay() -> Self {
+    Self::new(CellType::Relay)
+  }
+
+  pub fn one_shot() -> Self {
+    Self::new(CellType::OneShot)
+  }
+
+  pub fn link(cell_ref: CellRef) -> Self {
+    let mut cell = Self::new(CellType::Link);
+    cell.link = Some(cell_ref);
+    return cell;
   }
 
   pub fn run(&mut self) {
     match self.tp {
-      CellType::Relay => {
+      CellType::Relay | CellType::OneShot => {
         self.flags.insert(CellFlags::FIRED);
       }
-      CellType::OneShot => {
+      CellType::Link => {
         self.flags.insert(CellFlags::FIRED);
       }
     }
+  }
+
+  pub fn get_type(&self) -> CellType {
+    self.tp
   }
 
   pub fn set_signal(&mut self, signal_bit: u8) {
@@ -111,6 +124,7 @@ impl Cell {
 pub enum CellType {
   Relay,
   OneShot,
+  Link,
 }
 
 // #[derive(Debug, Clone)]
@@ -125,10 +139,12 @@ pub enum Synapse {
   Association,
 }
 
+type ComponentGraph = Graph<Cell, Synapse>;
+
 #[derive(Debug, Clone)]
 pub struct Component {
   pub id: String,
-  pub graph: Graph<Cell, Synapse>,
+  pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 

@@ -1,13 +1,17 @@
 use super::component::*;
 use super::component_instance::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub struct Orchestrator {
   components: HashMap<String, Component>,
+  // TODO: (microoptimization) Sort instances topologically for cache locality purposes
   component_instances: HashMap<String, ComponentInstance>,
   active_instance_ids: HashSet<String>,
   clock_cycle: usize,
+  inactivate_ids: Vec<String>,
+  cell_refs_to_stage: RefCell<Vec<CellRef>>,
 }
 
 impl Orchestrator {
@@ -17,6 +21,8 @@ impl Orchestrator {
       component_instances: HashMap::new(),
       active_instance_ids: HashSet::new(),
       clock_cycle: 0,
+      inactivate_ids: Vec::new(),
+      cell_refs_to_stage: RefCell::new(Vec::new()),
     }
   }
 
@@ -40,18 +46,24 @@ impl Orchestrator {
   }
 
   pub fn step(&mut self) {
-    let mut inactivate_ids = Vec::<String>::new();
+    let cell_refs_to_stage = &mut self.cell_refs_to_stage.borrow_mut();
+
     for id in self.active_instance_ids.iter() {
+      let mut stage_cell_ref = |cell_ref: &CellRef| {
+        cell_refs_to_stage.push(cell_ref.clone());
+      };
+
       let component_instance = self.component_instances.get_mut(id).unwrap();
-      let is_active = component_instance.step();
+      let is_active = component_instance.step(&mut stage_cell_ref);
       if !is_active {
-        inactivate_ids.push(id.clone());
+        self.inactivate_ids.push(id.clone());
       }
     }
 
-    for id in inactivate_ids {
-      self.active_instance_ids.remove(&id);
+    for id in self.inactivate_ids.iter() {
+      self.active_instance_ids.remove(id);
     }
+    self.inactivate_ids.clear();
     self.clock_cycle += 1;
   }
 
@@ -72,10 +84,10 @@ mod tests {
   fn it_works() {
     let mut component = Component::new();
 
-    let cell_a = component.graph.add_node(Cell::new(CellType::OneShot));
-    let cell_b = component.graph.add_node(Cell::new(CellType::Relay));
-    let cell_c = component.graph.add_node(Cell::new(CellType::Relay));
-    let cell_d = component.graph.add_node(Cell::new(CellType::Relay));
+    let cell_a = component.graph.add_node(Cell::one_shot());
+    let cell_b = component.graph.add_node(Cell::relay());
+    let cell_c = component.graph.add_node(Cell::relay());
+    let cell_d = component.graph.add_node(Cell::relay());
     component
       .graph
       .add_edge(cell_a, cell_b, Synapse::Connection { signal_bit: 0 });
@@ -91,7 +103,6 @@ mod tests {
     orchestrator.add_component_instance(instance);
     orchestrator.run();
 
-    //assert!(super::grammar::TermParser::new().parse("22").is_ok());
     assert_eq!(orchestrator.clock_cycle, 4);
   }
 }

@@ -9,7 +9,7 @@ pub struct ComponentInstance {
   fired_cells: Vec<NodeIndex>,
   processing_cells: Vec<NodeIndex>,
   staging_cells: Vec<NodeIndex>,
-  clock_cycle: usize,
+  instance_cycle: usize,
 }
 
 // TODO: Consider optimization stragies - Cells and their operands should be grouped by component for cache locality
@@ -25,7 +25,7 @@ impl ComponentInstance {
       fired_cells: Vec::new(),
       processing_cells: Vec::new(),
       staging_cells: init_cells.to_vec(),
-      clock_cycle: 0,
+      instance_cycle: 0,
     }
   }
 
@@ -33,19 +33,19 @@ impl ComponentInstance {
     self.staging_cells.len() > 0 || self.fired_cells.len() > 0
   }
 
-  pub fn run(&mut self) {
-    while self.step() {}
+  pub fn run<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) {
+    while self.step(stage_cell_ref) {}
   }
 
-  pub fn step(&mut self) -> bool {
+  pub fn step<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) -> bool {
     self.process_fired_cells();
-    self.stage_connected_cells();
+    self.stage_connected_cells(stage_cell_ref);
     if self.staging_cells.len() > 0 {
       std::mem::swap(&mut self.processing_cells, &mut self.staging_cells);
       self.staging_cells.clear();
       self.run_processing_cells();
     }
-    self.clock_cycle += 1;
+    self.instance_cycle += 1;
     return self.fired_cells.len() > 0;
   }
 
@@ -69,22 +69,32 @@ impl ComponentInstance {
     }
   }
 
-  fn stage_connected_cells(&mut self) {
+  fn stage_connected_cells<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) {
     // Stage connected cells that are not already staged
     let graph = &mut self.component.graph;
     for cell_index in self.fired_cells.iter() {
       trace!("staging connections of {:?}", cell_index);
-      let mut edges = graph
-        .neighbors_directed(*cell_index, Direction::Outgoing)
-        .detach();
-      while let Some((_, target_index)) = edges.next(&graph) {
-        let target = graph.node_weight_mut(target_index).unwrap();
-        if !target.flags.contains(CellFlags::STAGED) {
-          trace!("staging {:?}", target_index);
-          self.staging_cells.push(target_index);
-          target.flags.insert(CellFlags::STAGED);
+      let cell = graph.node_weight(*cell_index).unwrap();
+      match cell.get_type() {
+        CellType::Link => {
+          // TODO: Orchestrator should tell the linked component instance to stage the cell
+          stage_cell_ref(cell.link.as_ref().unwrap())
+        }
+        _ => {
+          let mut edges = graph
+            .neighbors_directed(*cell_index, Direction::Outgoing)
+            .detach();
+          while let Some((_, target_index)) = edges.next(&graph) {
+            let target = graph.node_weight_mut(target_index).unwrap();
+            if !target.flags.contains(CellFlags::STAGED) {
+              trace!("staging {:?}", target_index);
+              self.staging_cells.push(target_index);
+              target.flags.insert(CellFlags::STAGED);
+            }
+          }
         }
       }
+
       let cell = graph.node_weight_mut(*cell_index).unwrap();
       cell.flags.remove(CellFlags::FIRED);
     }
@@ -117,10 +127,14 @@ mod tests {
   fn it_works() {
     let mut component = Component::new();
 
-    let cell_a = component.graph.add_node(Cell::new(CellType::OneShot));
-    let cell_b = component.graph.add_node(Cell::new(CellType::Relay));
-    let cell_c = component.graph.add_node(Cell::new(CellType::Relay));
-    let cell_d = component.graph.add_node(Cell::new(CellType::Relay));
+    let cell_a = component.graph.add_node(Cell::one_shot());
+    let cell_b = component.graph.add_node(Cell::relay());
+    let cell_c = component.graph.add_node(Cell::relay());
+    let cell_d = component.graph.add_node(Cell::link(CellRef {
+      to_component_id: Some(cuid::cuid().unwrap()),
+      to_component_instance_id: Some(cuid::cuid().unwrap()),
+      to_cell_index: Some(NodeIndex::new(0)),
+    }));
     component
       .graph
       .add_edge(cell_a, cell_b, Synapse::Connection { signal_bit: 0 });
@@ -132,9 +146,14 @@ mod tests {
       .add_edge(cell_b, cell_d, Synapse::Connection { signal_bit: 0 });
     let init_cells = [cell_a];
     let mut instance = ComponentInstance::new(&component, &init_cells);
-    instance.run();
 
-    //assert!(super::grammar::TermParser::new().parse("22").is_ok());
-    assert_eq!(instance.clock_cycle, 4);
+    let mut stage_cell_ref_count = 0;
+    let mut stage_cell_ref = |_: &_| {
+      stage_cell_ref_count += 1;
+    };
+    instance.run(&mut stage_cell_ref);
+
+    assert_eq!(instance.instance_cycle, 4);
+    assert_eq!(stage_cell_ref_count, 1);
   }
 }
