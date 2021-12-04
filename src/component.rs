@@ -49,11 +49,19 @@ pub struct CellRef {
   pub to_component_id: Option<String>,
   pub to_component_instance_id: Option<String>,
   pub to_cell_index: Option<NodeIndex>,
+  // TODO: re-thinking how to reference other component nodes
+  // TODO: may be time to use differing structures for components and component_instances
+  // since components are more about design-time considerations and component_instances runtime
+  // pub to_component_name: String
+  // pub to_cell_name: String
+  // // The following fields are determined on-demand
+  // pub to_cell_index: Option<NodeIndex>
+  // pub to_component_instance_rc: Option<Rc<RefCell<ComponentInstance>>>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cell {
-  tp: CellType,
+  pub tp: CellType,
   pub flags: CellFlags,
   pub signals: u32,
   // references cell in other component instance
@@ -82,17 +90,6 @@ impl Cell {
     let mut cell = Self::new(CellType::Link);
     cell.link = Some(cell_ref);
     return cell;
-  }
-
-  pub fn run(&mut self) {
-    match self.tp {
-      CellType::Relay | CellType::OneShot => {
-        self.flags.insert(CellFlags::FIRED);
-      }
-      CellType::Link => {
-        self.flags.insert(CellFlags::FIRED);
-      }
-    }
   }
 
   pub fn get_type(&self) -> CellType {

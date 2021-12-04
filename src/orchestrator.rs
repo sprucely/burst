@@ -4,6 +4,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+// TODO: Add threadpool concurrency via rayon crate (https://docs.rs/rayon/)
+// exellent summary of various crates at https://www.reddit.com/r/rust/comments/djzd5t/which_asyncconcurrency_crate_to_choose_from/
+
+// TODO: Add error handling via anyhow crate (https://docs.rs/anyhow/)
+// summary of error handling at https://www.reddit.com/r/rust/comments/gqe57x/what_are_you_using_for_error_handling/
+// anyhow for applications, thiserror for libraries (thiserror helps to not expose internal error handling to users)
+
 pub struct Orchestrator {
   components: HashMap<String, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes

@@ -7,15 +7,14 @@ pub struct ComponentInstance {
   pub id: String,
   component: Component,
   fired_cells: Vec<NodeIndex>,
-  processing_cells: Vec<NodeIndex>,
-  staging_cells: Vec<NodeIndex>,
+  active_cells: Vec<NodeIndex>,
+  staged_cells: Vec<NodeIndex>,
   instance_cycle: usize,
 }
 
-// TODO: Consider optimization stragies - Cells and their operands should be grouped by component for cache locality
-// Component instance could maintain it's own execution state
-// - Orchestrator would need to maintain a topologically sorted (for shared parent/child data) list of component instances with staged cells
-// - Component instance would need a way to change it's active status
+// ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
+// rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
+// It will also help identify boundaries for splitting processing across multiple threads.
 
 impl ComponentInstance {
   pub fn new(component: &Component, init_cells: &[NodeIndex]) -> ComponentInstance {
@@ -23,14 +22,14 @@ impl ComponentInstance {
       id: cuid::cuid().unwrap(),
       component: component.clone(),
       fired_cells: Vec::new(),
-      processing_cells: Vec::new(),
-      staging_cells: init_cells.to_vec(),
+      active_cells: Vec::new(),
+      staged_cells: init_cells.to_vec(),
       instance_cycle: 0,
     }
   }
 
   pub fn is_active(&self) -> bool {
-    self.staging_cells.len() > 0 || self.fired_cells.len() > 0
+    self.staged_cells.len() > 0 || self.fired_cells.len() > 0
   }
 
   pub fn run<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) {
@@ -38,18 +37,18 @@ impl ComponentInstance {
   }
 
   pub fn step<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) -> bool {
-    self.process_fired_cells();
-    self.stage_connected_cells(stage_cell_ref);
-    if self.staging_cells.len() > 0 {
-      std::mem::swap(&mut self.processing_cells, &mut self.staging_cells);
-      self.staging_cells.clear();
-      self.run_processing_cells();
+    self.propagate_fired_signals();
+    self.stage_signaled_and_associated_cells(stage_cell_ref);
+    if self.staged_cells.len() > 0 {
+      std::mem::swap(&mut self.active_cells, &mut self.staged_cells);
+      self.staged_cells.clear();
+      self.process_active_cells();
     }
     self.instance_cycle += 1;
     return self.fired_cells.len() > 0;
   }
 
-  fn process_fired_cells(&mut self) {
+  fn propagate_fired_signals(&mut self) {
     // Set connected signal flags according to connections
     let graph = &mut self.component.graph;
     for cell_index in self.fired_cells.iter() {
@@ -69,7 +68,7 @@ impl ComponentInstance {
     }
   }
 
-  fn stage_connected_cells<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) {
+  fn stage_signaled_and_associated_cells<F: FnMut(&CellRef)>(&mut self, stage_cell_ref: &mut F) {
     // Stage connected cells that are not already staged
     let graph = &mut self.component.graph;
     for cell_index in self.fired_cells.iter() {
@@ -84,12 +83,30 @@ impl ComponentInstance {
           let mut edges = graph
             .neighbors_directed(*cell_index, Direction::Outgoing)
             .detach();
-          while let Some((_, target_index)) = edges.next(&graph) {
-            let target = graph.node_weight_mut(target_index).unwrap();
-            if !target.flags.contains(CellFlags::STAGED) {
-              trace!("staging {:?}", target_index);
-              self.staging_cells.push(target_index);
-              target.flags.insert(CellFlags::STAGED);
+          while let Some((edge, target_index)) = edges.next(&graph) {
+            if let Synapse::Connection { .. } = graph.edge_weight(edge).unwrap() {
+              let target = graph.node_weight_mut(target_index).unwrap();
+              if !target.flags.contains(CellFlags::STAGED) {
+                trace!("staging {:?}", target_index);
+                self.staged_cells.push(target_index);
+                target.flags.insert(CellFlags::STAGED);
+              }
+            }
+          }
+
+          // Associated cells (sensors) are staged separately to give explicitly signaled
+          // cells a chance to modify state before doing any sensing of said state changes.
+          let mut edges = graph
+            .neighbors_directed(*cell_index, Direction::Outgoing)
+            .detach();
+          while let Some((edge, target_index)) = edges.next(&graph) {
+            if let Synapse::Association = graph.edge_weight(edge).unwrap() {
+              let target = graph.node_weight_mut(target_index).unwrap();
+              if !target.flags.contains(CellFlags::STAGED) {
+                trace!("staging {:?}", target_index);
+                self.staged_cells.push(target_index);
+                target.flags.insert(CellFlags::STAGED);
+              }
             }
           }
         }
@@ -101,12 +118,19 @@ impl ComponentInstance {
     self.fired_cells.clear();
   }
 
-  fn run_processing_cells(&mut self) {
+  fn process_active_cells(&mut self) {
     let graph = &mut self.component.graph;
-    for cell_index in self.processing_cells.iter() {
+    for cell_index in self.active_cells.iter() {
       let cell = graph.node_weight_mut(*cell_index).unwrap();
       trace!("running {:?}", cell_index);
-      cell.run();
+      match cell.tp {
+        CellType::Relay | CellType::OneShot => {
+          cell.flags.insert(CellFlags::FIRED);
+        }
+        CellType::Link => {
+          cell.flags.insert(CellFlags::FIRED);
+        }
+      }
       if cell.flags.contains(CellFlags::FIRED) {
         self.fired_cells.push(*cell_index);
       }
