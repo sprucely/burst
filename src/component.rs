@@ -1,40 +1,15 @@
+use std::cell::RefCell;
+use std::hash::Hash;
+use std::rc::Rc;
+
 use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
 
-/*
-ComponentGraph
-  nodes:
-    cells:
-      effectors:
-        ...
-      sensors:
-        ...
-      sensor-effectors:
-        relay
-        ...
-    variables
-    component-references
-    connector-bundles
-  weights:
-    synapses
-      from: cell
-      to: cell
-    associations:
-      from: effector
-      to: sensor
-    connections
-      from: connector
-      to: connector-or-reference
-    operands:
-      from: cell
-      to: variable
+use super::component_instance::ComponentInstance;
 
-
-Connector
-
-
-*/
+// TODO: may be time to use differing structures for components and component_instances
+// since components are more about design-time considerations and component_instances runtime
 
 bitflags! {
   #[derive(Default)]
@@ -44,37 +19,48 @@ bitflags! {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CellRef {
-  pub to_component_id: Option<String>,
-  pub to_component_instance_id: Option<String>,
-  pub to_cell_index: Option<NodeIndex>,
-  // TODO: re-thinking how to reference other component nodes
-  // TODO: may be time to use differing structures for components and component_instances
-  // since components are more about design-time considerations and component_instances runtime
-  // pub to_component_name: String
-  // pub to_cell_name: String
-  // // The following fields are determined on-demand
-  // pub to_cell_index: Option<NodeIndex>
-  // pub to_component_instance_rc: Option<Rc<RefCell<ComponentInstance>>>
+pub enum Node {
+  Cell(Cell),
+  ComponentInstanceRef(ComponentInstanceRef),
+  ConnectorFrom,
+  ConnectorTo,
+}
+
+pub struct ComponentInstanceRef {
+  pub component_name: String,
+  pub instance_name: String,
+  // Not using an instance id in order to minimize dictionary lookups in tight loops
+  pub instance: Option<Rc<RefCell<ComponentInstance>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConnectionInfo {
+  pub name: String,
+  pub cell_index: Option<NodeIndex>,
+}
+
+impl ConnectionInfo {
+  pub fn new(name: String) -> ConnectionInfo {
+    ConnectionInfo {
+      name,
+      cell_index: None,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct Cell {
-  pub tp: CellType,
+  pub cell_type: CellType,
   pub flags: CellFlags,
   pub signals: u32,
-  // references cell in other component instance
-  pub link: Option<CellRef>,
 }
 
 impl Cell {
   fn new(tp: CellType) -> Self {
     Self {
-      tp: tp,
+      cell_type: tp,
       flags: CellFlags::empty(),
       signals: 0,
-      link: None,
     }
   }
 
@@ -86,14 +72,8 @@ impl Cell {
     Self::new(CellType::OneShot)
   }
 
-  pub fn link(cell_ref: CellRef) -> Self {
-    let mut cell = Self::new(CellType::Link);
-    cell.link = Some(cell_ref);
-    return cell;
-  }
-
   pub fn get_type(&self) -> CellType {
-    self.tp
+    self.cell_type
   }
 
   pub fn set_signal(&mut self, signal_bit: u8) {
@@ -121,7 +101,6 @@ impl Cell {
 pub enum CellType {
   Relay,
   OneShot,
-  Link,
 }
 
 // #[derive(Debug, Clone)]
@@ -130,25 +109,44 @@ pub enum CellType {
 //   pub index: NodeIndex,
 // }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Synapse {
-  Connection { signal_bit: u8 },
+#[derive(Debug, Clone)]
+pub struct Signal {
+  pub signal_bit: u8,
+  // // only used for connections to ComponentInstances
+  // pub connection_info: Option<ConnectionInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Edge {
+  Signal(Signal),
   Association,
 }
 
-type ComponentGraph = Graph<Cell, Synapse>;
+impl Edge {
+  pub fn new_signal(signal_bit: u8) -> Self {
+    Self::Signal(Signal { signal_bit })
+  }
+
+  pub fn new_association() -> Self {
+    Self::Association
+  }
+}
+
+pub type ComponentGraph = Graph<Cell, Edge>;
 
 #[derive(Debug, Clone)]
 pub struct Component {
   pub id: String,
+  pub name: String,
   pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
 impl Component {
-  pub fn new() -> Self {
+  pub fn new(name: String) -> Self {
     Component {
       id: cuid::cuid().unwrap(),
+      name,
       graph: Graph::new(),
       // cell_info_map: HashMap::new(),
     }
@@ -161,13 +159,13 @@ mod tests {
 
   #[test]
   fn it_works() {
-    let mut component = Component::new();
+    let mut component = Component::new("AComponent".to_string());
 
     let cell_a = component.graph.add_node(Cell::new(CellType::Relay));
     let cell_b = component.graph.add_node(Cell::new(CellType::Relay));
     component
       .graph
-      .add_edge(cell_a, cell_b, Synapse::Connection { signal_bit: 0 });
+      .add_edge(cell_a, cell_b, Edge::new_signal(0));
   }
 
   #[test]

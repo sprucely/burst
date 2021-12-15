@@ -18,7 +18,7 @@ pub struct Orchestrator {
   active_instance_ids: HashSet<String>,
   clock_cycle: usize,
   inactivate_ids: Vec<String>,
-  cell_refs_to_stage: RefCell<Vec<CellRef>>,
+  cell_refs_to_stage: RefCell<Vec<ConnectionInfo>>,
 }
 
 impl Orchestrator {
@@ -53,15 +53,9 @@ impl Orchestrator {
   }
 
   pub fn step(&mut self) {
-    let cell_refs_to_stage = &mut self.cell_refs_to_stage.borrow_mut();
-
     for id in self.active_instance_ids.iter() {
-      let mut stage_cell_ref = |cell_ref: &CellRef| {
-        cell_refs_to_stage.push(cell_ref.clone());
-      };
-
       let component_instance = self.component_instances.get_mut(id).unwrap();
-      let is_active = component_instance.step(&mut stage_cell_ref);
+      let is_active = component_instance.step();
       if !is_active {
         self.inactivate_ids.push(id.clone());
       }
@@ -89,7 +83,7 @@ mod tests {
   #[traced_test]
   #[test]
   fn it_works() {
-    let mut component = Component::new();
+    let mut component = Component::new("AComponent".to_string());
 
     let cell_a = component.graph.add_node(Cell::one_shot());
     let cell_b = component.graph.add_node(Cell::relay());
@@ -97,13 +91,11 @@ mod tests {
     let cell_d = component.graph.add_node(Cell::relay());
     component
       .graph
-      .add_edge(cell_a, cell_b, Synapse::Connection { signal_bit: 0 });
+      .add_edge(cell_a, cell_b, Edge::new_signal(0));
+    component.graph.add_edge(cell_b, cell_c, Edge::Association);
     component
       .graph
-      .add_edge(cell_b, cell_c, Synapse::Association);
-    component
-      .graph
-      .add_edge(cell_b, cell_d, Synapse::Connection { signal_bit: 0 });
+      .add_edge(cell_b, cell_d, Edge::new_signal(0));
     let init_cells = [cell_a];
     let instance = ComponentInstance::new(&component, &init_cells);
     let mut orchestrator = Orchestrator::new();
