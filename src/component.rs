@@ -19,6 +19,7 @@ bitflags! {
   }
 }
 
+#[derive(Debug, Clone)]
 pub enum Node {
   Cell(Cell),
   ComponentInstanceRef(ComponentInstanceRef),
@@ -26,6 +27,7 @@ pub enum Node {
   ConnectorTo,
 }
 
+#[derive(Debug, Clone)]
 pub struct ComponentInstanceRef {
   pub component_name: String,
   pub instance_name: String,
@@ -132,7 +134,7 @@ impl Edge {
   }
 }
 
-pub type ComponentGraph = Graph<Cell, Edge>;
+pub type ComponentGraph = Graph<Node, Edge>;
 
 #[derive(Debug, Clone)]
 pub struct Component {
@@ -161,8 +163,12 @@ mod tests {
   fn it_works() {
     let mut component = Component::new("AComponent".to_string());
 
-    let cell_a = component.graph.add_node(Cell::new(CellType::Relay));
-    let cell_b = component.graph.add_node(Cell::new(CellType::Relay));
+    let cell_a = component
+      .graph
+      .add_node(Node::Cell(Cell::new(CellType::Relay)));
+    let cell_b = component
+      .graph
+      .add_node(Node::Cell(Cell::new(CellType::Relay)));
     component
       .graph
       .add_edge(cell_a, cell_b, Edge::new_signal(0));

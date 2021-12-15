@@ -85,10 +85,10 @@ mod tests {
   fn it_works() {
     let mut component = Component::new("AComponent".to_string());
 
-    let cell_a = component.graph.add_node(Cell::one_shot());
-    let cell_b = component.graph.add_node(Cell::relay());
-    let cell_c = component.graph.add_node(Cell::relay());
-    let cell_d = component.graph.add_node(Cell::relay());
+    let cell_a = component.graph.add_node(Node::Cell(Cell::one_shot()));
+    let cell_b = component.graph.add_node(Node::Cell(Cell::relay()));
+    let cell_c = component.graph.add_node(Node::Cell(Cell::relay()));
+    let cell_d = component.graph.add_node(Node::Cell(Cell::relay()));
     component
       .graph
       .add_edge(cell_a, cell_b, Edge::new_signal(0));
