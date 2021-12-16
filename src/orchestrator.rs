@@ -3,6 +3,7 @@ use super::component_instance::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 // TODO: Add threadpool concurrency via rayon crate (https://docs.rs/rayon/)
 // exellent summary of various crates at https://www.reddit.com/r/rust/comments/djzd5t/which_asyncconcurrency_crate_to_choose_from/
@@ -11,6 +12,22 @@ use std::collections::HashSet;
 // summary of error handling at https://www.reddit.com/r/rust/comments/gqe57x/what_are_you_using_for_error_handling/
 // anyhow for applications, thiserror for libraries (thiserror helps to not expose internal error handling to users)
 
+#[derive(Debug, Clone)]
+pub struct ExecutionContext {
+  orchestrator: Rc<RefCell<Orchestrator>>,
+}
+
+impl ExecutionContext {
+  pub fn new(orchestrator: Rc<RefCell<Orchestrator>>) -> ExecutionContext {
+    ExecutionContext { orchestrator }
+  }
+
+  pub(crate) fn signal_connector(&self, _connector: &mut ConnectorOut) {
+    todo!()
+  }
+}
+
+#[derive(Debug)]
 pub struct Orchestrator {
   components: HashMap<String, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
@@ -97,11 +114,15 @@ mod tests {
       .graph
       .add_edge(cell_b, cell_d, Edge::new_signal(0));
     let init_cells = [cell_a];
-    let instance = ComponentInstance::new(&component, &init_cells);
-    let mut orchestrator = Orchestrator::new();
-    orchestrator.add_component_instance(instance);
-    orchestrator.run();
+    let orchestrator = Rc::new(RefCell::new(Orchestrator::new()));
+    let instance = ComponentInstance::new(
+      &component,
+      &init_cells,
+      ExecutionContext::new(orchestrator.clone()),
+    );
+    orchestrator.borrow_mut().add_component_instance(instance);
+    orchestrator.borrow_mut().run();
 
-    assert_eq!(orchestrator.clock_cycle, 4);
+    assert_eq!(orchestrator.borrow().clock_cycle, 4);
   }
 }

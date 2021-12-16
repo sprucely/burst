@@ -1,3 +1,7 @@
+use std::borrow::BorrowMut;
+
+use crate::orchestrator::ExecutionContext;
+
 use super::component::*;
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
@@ -11,6 +15,7 @@ pub struct ComponentInstance {
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
   instance_cycle: usize,
+  execution_context: ExecutionContext,
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
@@ -18,7 +23,11 @@ pub struct ComponentInstance {
 // It will also help identify boundaries for splitting processing across multiple threads.
 
 impl ComponentInstance {
-  pub fn new(component: &Component, init_cells: &[NodeIndex]) -> ComponentInstance {
+  pub fn new(
+    component: &Component,
+    init_cells: &[NodeIndex],
+    orchestrator_ref: ExecutionContext,
+  ) -> ComponentInstance {
     ComponentInstance {
       id: cuid::cuid().unwrap(),
       component: component.clone(),
@@ -26,6 +35,7 @@ impl ComponentInstance {
       active_nodes: vec![],
       staged_nodes: init_cells.to_vec(),
       instance_cycle: 0,
+      execution_context: orchestrator_ref,
     }
   }
 
@@ -97,6 +107,12 @@ impl ComponentInstance {
                         self.staged_nodes.push(target_index);
                         cell.flags.insert(CellFlags::STAGED);
                       }
+                    }
+                    Node::ConnectorOut(connector) => {
+                      self
+                        .execution_context
+                        .borrow_mut()
+                        .signal_connector(connector);
                     }
                     _ => {
                       todo!();
@@ -171,6 +187,10 @@ impl ComponentInstance {
 
 #[cfg(test)]
 mod tests {
+  use std::{cell::RefCell, rc::Rc};
+
+  use crate::orchestrator::Orchestrator;
+
   use super::*;
   use tracing_test::traced_test;
 
@@ -191,7 +211,14 @@ mod tests {
       .graph
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
-    let mut instance = ComponentInstance::new(&component, &init_cells);
+
+    let orchestrator = Rc::new(RefCell::new(Orchestrator::new()));
+
+    let mut instance = ComponentInstance::new(
+      &component,
+      &init_cells,
+      ExecutionContext::new(orchestrator.clone()),
+    );
 
     instance.run();
 

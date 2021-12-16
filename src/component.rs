@@ -23,8 +23,8 @@ bitflags! {
 pub enum Node {
   Cell(Cell),
   ComponentInstanceRef(ComponentInstanceRef),
-  ConnectorFrom,
-  ConnectorTo,
+  ConnectorIn,
+  ConnectorOut(ConnectorOut),
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +48,19 @@ impl ConnectionInfo {
       cell_index: None,
     }
   }
+}
+
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct ConnectorIn {
+  pub flags: CellFlags,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnectorOut {
+  pub component_name: String,
+  pub instance_name: String,
+  // Not using an instance id in order to minimize dictionary lookups in tight loops
+  pub instance: Option<Rc<RefCell<ComponentInstance>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
