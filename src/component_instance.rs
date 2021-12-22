@@ -1,21 +1,32 @@
-use std::borrow::BorrowMut;
+use std::cell::RefCell;
+use std::rc::Rc;
 
+use crate::component::*;
 use crate::orchestrator::ExecutionContext;
 
-use super::component::*;
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComponentInstanceId(String);
+
+impl ComponentInstanceId {
+  pub fn new() -> ComponentInstanceId {
+    ComponentInstanceId(cuid::cuid().unwrap())
+  }
+}
+
 #[derive(Debug)]
 pub struct ComponentInstance {
-  pub id: String,
+  pub id: ComponentInstanceId,
   component: Component,
   fired_nodes: Vec<NodeIndex>,
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
   instance_cycle: usize,
   execution_context: ExecutionContext,
+  self_rc: Option<Rc<RefCell<ComponentInstance>>>,
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
@@ -26,18 +37,27 @@ impl ComponentInstance {
   pub fn new(
     component: &Component,
     init_cells: &[NodeIndex],
-    orchestrator_ref: ExecutionContext,
-  ) -> ComponentInstance {
-    ComponentInstance {
-      id: cuid::cuid().unwrap(),
+    execution_context: ExecutionContext,
+  ) -> Rc<RefCell<ComponentInstance>> {
+    let instance = ComponentInstance {
+      id: ComponentInstanceId::new(),
       component: component.clone(),
       fired_nodes: vec![],
       active_nodes: vec![],
       staged_nodes: init_cells.to_vec(),
       instance_cycle: 0,
-      execution_context: orchestrator_ref,
-    }
+      execution_context,
+      self_rc: None,
+    };
+    let instance_ref = Rc::new(RefCell::new(instance));
+    instance_ref.borrow_mut().self_rc = Some(instance_ref.clone());
+    return instance_ref;
   }
+
+  // pub fn weak(&self) -> Weak<RefCell<ComponentInstance>> {
+  //   let Some(component_instance_rc) = self.self_rc.clone();
+  //   return Rc::downgrade(&component_instance_rc);
+  // }
 
   pub fn is_active(&self) -> bool {
     self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0
@@ -70,15 +90,10 @@ impl ComponentInstance {
         let synapse = &mut graph[edge_index];
         if let Edge::Signal(signal) = synapse {
           let bit = signal.signal_bit;
-          let target = &mut graph[target_index];
-          match target {
-            Node::Cell(cell) => {
-              cell.set_signal(bit);
-            }
-            _ => {
-              todo!();
-            }
+          if let Node::Cell(cell) = &mut graph[target_index] {
+            cell.set_signal(bit);
           }
+          // no other node types should have signals
         }
       }
     }
@@ -89,70 +104,60 @@ impl ComponentInstance {
     let graph = &mut self.component.graph;
     for node_index in self.fired_nodes.iter() {
       trace!("staging connections of {:?}", node_index);
-      let node = &graph[*node_index];
-      match node {
-        Node::Cell(cell) => {
-          match cell.get_type() {
-            _ => {
-              let mut edges = graph
-                .neighbors_directed(*node_index, Direction::Outgoing)
-                .detach();
-              while let Some((edge, target_index)) = edges.next(&graph) {
-                if let Edge::Signal(Signal { signal_bit: _ }) = &mut graph[edge] {
-                  let target = &mut graph[target_index];
-                  match target {
-                    Node::Cell(cell) => {
-                      if !cell.flags.contains(CellFlags::STAGED) {
-                        trace!("staging {:?}", target_index);
-                        self.staged_nodes.push(target_index);
-                        cell.flags.insert(CellFlags::STAGED);
-                      }
-                    }
-                    Node::ConnectorOut(connector) => {
-                      self
-                        .execution_context
-                        .borrow_mut()
-                        .signal_connector(connector);
-                    }
-                    _ => {
-                      todo!();
-                    }
-                  }
-                }
+      let mut edges = graph
+        .neighbors_directed(*node_index, Direction::Outgoing)
+        .detach();
+      while let Some((edge, target_index)) = edges.next(&graph) {
+        if let Edge::Signal(Signal { signal_bit: _ }) = &mut graph[edge] {
+          match &mut graph[target_index] {
+            Node::Cell(cell) => {
+              if !cell.flags.contains(CellFlags::STAGED) {
+                trace!("staging {:?}", target_index);
+                self.staged_nodes.push(target_index);
+                cell.flags.insert(CellFlags::STAGED);
               }
+            }
+            Node::ConnectorOut(connector) => {
+              self
+                .execution_context
+                .signal_connector(connector, (&self.id).clone());
+            }
+            _ => {
+              unimplemented!();
+            }
+          }
+        }
+      }
 
-              // Associated cells (sensors) are staged separately to give explicitly signaled
-              // cells a chance to modify state before doing any sensing of state changes.
-              let mut edges = graph
-                .neighbors_directed(*node_index, Direction::Outgoing)
-                .detach();
-              while let Some((edge, target_index)) = edges.next(&graph) {
-                if let Edge::Association = &graph[edge] {
-                  let target = &mut graph[target_index];
-                  match target {
-                    Node::Cell(cell) => {
-                      if !cell.flags.contains(CellFlags::STAGED) {
-                        trace!("staging {:?}", target_index);
-                        self.staged_nodes.push(target_index);
-                        cell.flags.insert(CellFlags::STAGED);
-                      }
-                    }
-                    _ => {
-                      todo!();
-                    }
-                  }
-                }
+      if let Node::Cell(_) = &mut graph[*node_index] {
+        // Associated cells (sensors) are staged separately to give explicitly signaled
+        // cells a chance to modify state before doing any sensing of state changes.
+        let mut edges = graph
+          .neighbors_directed(*node_index, Direction::Outgoing)
+          .detach();
+        while let Some((edge, target_index)) = edges.next(&graph) {
+          if let Edge::Association = &graph[edge] {
+            if let Node::Cell(cell) = &mut graph[target_index] {
+              if !cell.flags.contains(CellFlags::STAGED) {
+                trace!("staging {:?}", target_index);
+                self.staged_nodes.push(target_index);
+                cell.flags.insert(CellFlags::STAGED);
               }
             }
           }
+        }
+        // no other node types should be associated
+      }
 
-          // reborrow as mutable to satisfy borrow checker
-          if let Node::Cell(cell) = &mut graph[*node_index] {
-            cell.flags.remove(CellFlags::FIRED);
-          }
+      match &mut graph[*node_index] {
+        Node::Cell(cell) => {
+          cell.flags.remove(CellFlags::FIRED);
+        }
+        Node::ConnectorIn(connector) => {
+          connector.flags.remove(CellFlags::FIRED);
         }
         _ => {
-          todo!();
+          unimplemented!();
         }
       }
     }
@@ -164,7 +169,6 @@ impl ComponentInstance {
     for node_index in self.active_nodes.iter() {
       match &mut graph[*node_index] {
         Node::Cell(cell) => {
-          trace!("running {:?}", node_index);
           match cell.cell_type {
             CellType::Relay | CellType::OneShot => {
               cell.flags.insert(CellFlags::FIRED);
@@ -177,8 +181,12 @@ impl ComponentInstance {
           // TODO: special handling for sequence detection cells which need to hold signals across multiple cycles
           cell.signals = 0;
         }
+        Node::ConnectorIn(connector) => {
+          connector.flags.insert(CellFlags::FIRED);
+          self.fired_nodes.push(*node_index);
+        }
         _ => {
-          todo!();
+          unimplemented!("No other node types should be active");
         }
       }
     }
@@ -187,11 +195,12 @@ impl ComponentInstance {
 
 #[cfg(test)]
 mod tests {
-  use std::{cell::RefCell, rc::Rc};
+  use std::rc::Rc;
 
-  use crate::orchestrator::Orchestrator;
+  use crate::component::*;
+  use crate::component_instance::ComponentInstance;
+  use crate::orchestrator::{ExecutionContext, Orchestrator};
 
-  use super::*;
   use tracing_test::traced_test;
 
   #[traced_test]
@@ -212,13 +221,12 @@ mod tests {
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
 
-    let orchestrator = Rc::new(RefCell::new(Orchestrator::new()));
-
-    let mut instance = ComponentInstance::new(
+    let instance_rc = ComponentInstance::new(
       &component,
       &init_cells,
-      ExecutionContext::new(orchestrator.clone()),
+      ExecutionContext::new(Rc::downgrade(&Orchestrator::new())),
     );
+    let mut instance = instance_rc.borrow_mut();
 
     instance.run();
 

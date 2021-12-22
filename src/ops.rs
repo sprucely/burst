@@ -1,4 +1,5 @@
-use super::data::Value;
+use crate::data::Value;
+
 use arrayvec::ArrayVec;
 use paste::paste;
 use std::slice::from_raw_parts_mut;
