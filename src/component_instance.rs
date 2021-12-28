@@ -18,30 +18,30 @@ impl ComponentInstanceId {
 }
 
 #[derive(Debug)]
-pub struct ComponentInstance {
+pub struct ComponentInstance<'a> {
   pub id: ComponentInstanceId,
   pub node_name: NodeName,
-  component: Component,
+  component: Component<'a>,
   fired_nodes: Vec<NodeIndex>,
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
   incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
-  execution_context: ExecutionContext,
-  self_rc: Option<Rc<RefCell<ComponentInstance>>>,
+  execution_context: ExecutionContext<'a>,
+  self_rc: Option<Rc<RefCell<ComponentInstance<'a>>>>,
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
 // rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
 // It will also help identify boundaries for splitting processing across multiple threads.
 
-impl ComponentInstance {
+impl<'a> ComponentInstance<'a> {
   pub fn new(
     node_name: NodeName,
-    component: &Component,
+    component: &Component<'a>,
     init_cells: &[NodeIndex],
-    execution_context: ExecutionContext,
-  ) -> Rc<RefCell<ComponentInstance>> {
+    execution_context: ExecutionContext<'a>,
+  ) -> Rc<RefCell<ComponentInstance<'a>>> {
     let instance = ComponentInstance {
       id: ComponentInstanceId::new(),
       node_name,
@@ -239,7 +239,7 @@ mod tests {
       NodeName("root_node".to_string()),
       &component,
       &init_cells,
-      ExecutionContext::new(Rc::downgrade(&Orchestrator::new())),
+      ExecutionContext::new(|options| todo!()),
     );
     let mut instance = instance_rc.borrow_mut();
 

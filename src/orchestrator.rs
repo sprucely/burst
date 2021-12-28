@@ -16,23 +16,33 @@ use std::rc::Weak;
 // summary of error handling at https://www.reddit.com/r/rust/comments/gqe57x/what_are_you_using_for_error_handling/
 // anyhow for applications, thiserror for libraries (thiserror helps to not expose internal error handling to users)
 
-#[derive(Debug, Clone)]
-pub struct ExecutionContext {
-  orchestrator: Weak<RefCell<Orchestrator>>,
+pub struct ExecutionContext<'a> {
+  callback: Box<dyn FnMut(&mut SignalConnectorOptions) + 'a>,
 }
 
-impl ExecutionContext {
-  pub fn new(orchestrator: Weak<RefCell<Orchestrator>>) -> ExecutionContext {
-    ExecutionContext { orchestrator }
+impl<'a> std::fmt::Debug for ExecutionContext<'a> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "ExecutionContext")
+  }
+}
+
+impl<'a> ExecutionContext<'a> {
+  pub fn new(
+    signal_connector: impl FnMut(&mut SignalConnectorOptions) + 'a,
+  ) -> ExecutionContext<'a> {
+    ExecutionContext {
+      callback: Box::new(signal_connector),
+    }
   }
 
-  pub fn signal_connector(&self, options: &mut SignalConnectorOptions) {
-    self
-      .orchestrator
-      .upgrade()
-      .unwrap()
-      .borrow_mut()
-      .signal_connector(options);
+  pub fn signal_connector(&mut self, options: &mut SignalConnectorOptions) {
+    (self.callback)(options);
+    // self
+    //   .orchestrator
+    //   .upgrade()
+    //   .unwrap()
+    //   .borrow_mut()
+    //   .signal_connector(options);
   }
 }
 
@@ -56,45 +66,33 @@ pub struct InstanceConnection {
 }
 
 #[derive(Debug)]
-pub struct Orchestrator {
-  components: HashMap<ComponentName, Component>,
+pub struct Orchestrator<'a> {
+  components: HashMap<ComponentName, Component<'a>>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
-  instance_ids_to_instances: HashMap<ComponentInstanceId, Rc<RefCell<ComponentInstance>>>,
-  node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef, ComponentInstanceId>,
+  instance_ids_to_instances: HashMap<ComponentInstanceId, Rc<RefCell<ComponentInstance<'a>>>>,
+  node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef<'a>, ComponentInstanceId>,
   active_instance_ids: HashSet<ComponentInstanceId>,
   clock_cycle: usize,
   inactivate_ids: Vec<ComponentInstanceId>,
-  self_rc: Option<Rc<RefCell<Orchestrator>>>,
   // keep track of all connections between component instances
   connections: InstanceGraph,
   root_component_name: Option<ComponentName>,
   root_instance_id: Option<ComponentInstanceId>,
 }
 
-impl Drop for Orchestrator {
-  fn drop(&mut self) {
-    // todo: test if this is really necessary
-    self.self_rc = None;
-  }
-}
-
-impl Orchestrator {
-  pub fn new() -> Rc<RefCell<Self>> {
-    let orchestrator = Orchestrator {
+impl<'a> Orchestrator<'a> {
+  pub fn new() -> Self {
+    Orchestrator {
       components: HashMap::new(),
       instance_ids_to_instances: HashMap::new(),
       node_instance_refs_to_owner_ids: HashMap::new(),
       active_instance_ids: HashSet::new(),
       clock_cycle: 0,
       inactivate_ids: Vec::new(),
-      self_rc: None,
       connections: Graph::new(),
       root_component_name: None,
       root_instance_id: None,
-    };
-    let orchestrator_ref = Rc::new(RefCell::new(orchestrator));
-    orchestrator_ref.borrow_mut().self_rc = Some(orchestrator_ref.clone());
-    return orchestrator_ref;
+    }
   }
 
   // pub fn add_component_instance(&mut self, component_instance: Rc<RefCell<ComponentInstance>>) {
@@ -104,11 +102,11 @@ impl Orchestrator {
   //   );
   // }
 
-  pub fn add_component(&mut self, component: Component) {
+  pub fn add_component(&mut self, component: Component<'a>) {
     self.components.insert(component.name.clone(), component);
   }
 
-  pub fn add_root_component(&mut self, component: Component) {
+  pub fn add_root_component(&mut self, component: Component<'a>) {
     self.root_component_name = Some(component.name.clone());
     self.add_component(component);
   }
@@ -150,10 +148,10 @@ impl Orchestrator {
 
   fn resolve_connected_instance(
     &mut self,
-    connector_out: &mut ConnectorOut,
+    connector_out: &mut ConnectorOut<'a>,
     connector_out_owner_instance_id: Option<ComponentInstanceId>,
     connector_out_index: NodeIndex,
-  ) -> Option<(Rc<RefCell<ComponentInstance>>, NodeIndex)> {
+  ) -> Option<(Rc<RefCell<ComponentInstance<'a>>>, NodeIndex)> {
     match connector_out.to_node_instance_ref {
       Some(ref mut to_node_instance_ref) => match self.resolve_instance(to_node_instance_ref) {
         Some(to_instance_rc) => {
@@ -187,8 +185,8 @@ impl Orchestrator {
 
   fn resolve_instance(
     &mut self,
-    node_instance_ref: &mut NodeInstanceRef,
-  ) -> Option<Rc<RefCell<ComponentInstance>>> {
+    node_instance_ref: &mut NodeInstanceRef<'a>,
+  ) -> Option<Rc<RefCell<ComponentInstance<'a>>>> {
     match &node_instance_ref.instance {
       Some(instance) => {
         // instance has previously been resolved for this ref
@@ -212,7 +210,7 @@ impl Orchestrator {
               node_instance_ref.node_name.clone(),
               &component,
               &[],
-              ExecutionContext::new(Rc::downgrade(self.self_rc.as_ref().unwrap())),
+              ExecutionContext::new(|options| todo!()),
             );
             let component_instance = component_instance_rc.borrow_mut();
             node_instance_ref.instance = Some(Rc::downgrade(&component_instance_rc));
@@ -251,7 +249,7 @@ impl Orchestrator {
             NodeName("root".to_string()),
             root_component,
             &[],
-            ExecutionContext::new(Rc::downgrade(self.self_rc.as_ref().unwrap())),
+            ExecutionContext::new(|options| todo!()),
           );
           let root_component_instance = root_component_instance_rc.borrow_mut();
           self.root_instance_id = Some(root_component_instance.id.clone());
@@ -279,6 +277,7 @@ impl Orchestrator {
   }
 }
 
+#[derive(Debug, Clone)]
 pub enum SignalConnectorOptions {
   ConnectorInIndex(NodeIndex),
   ConnectorInIndexForInstanceId(NodeIndex, ComponentInstanceId),
@@ -308,8 +307,7 @@ mod tests {
     component
       .graph
       .add_edge(cell_b, cell_d, Edge::new_signal(0));
-    let orchestrator = Orchestrator::new();
-    let mut orchestrator = orchestrator.borrow_mut();
+    let mut orchestrator = Orchestrator::new();
     orchestrator.add_root_component(component);
     orchestrator.signal_connector(&mut SignalConnectorOptions::ConnectorInIndex(connector_in));
     orchestrator.run();

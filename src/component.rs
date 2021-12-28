@@ -22,10 +22,10 @@ bitflags! {
 }
 
 #[derive(Debug, Clone)]
-pub enum Node {
+pub enum Node<'a> {
   Cell(Cell),
   ConnectorIn(ConnectorIn),
-  ConnectorOut(ConnectorOut),
+  ConnectorOut(ConnectorOut<'a>),
   Component(ComponentInstanceRef),
 }
 
@@ -52,15 +52,15 @@ impl Deref for NodeName {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeInstanceRef {
+pub struct NodeInstanceRef<'a> {
   pub node_name: NodeName,
   pub component_name: ComponentName,
   pub instance_name: NodeName,
   pub node_index: NodeIndex,
-  pub instance: Option<Weak<RefCell<ComponentInstance>>>,
+  pub instance: Option<Weak<RefCell<ComponentInstance<'a>>>>,
 }
 
-impl NodeInstanceRef {
+impl<'a> NodeInstanceRef<'a> {
   pub fn new(node_name: NodeName, component_name: ComponentName, instance_name: NodeName) -> Self {
     NodeInstanceRef {
       node_name,
@@ -72,9 +72,9 @@ impl NodeInstanceRef {
   }
 }
 
-impl Eq for NodeInstanceRef {}
+impl<'a> Eq for NodeInstanceRef<'a> {}
 
-impl PartialEq for NodeInstanceRef {
+impl<'a> PartialEq for NodeInstanceRef<'a> {
   fn eq(&self, other: &Self) -> bool {
     self.node_name == other.node_name
       && self.component_name == other.component_name
@@ -82,7 +82,7 @@ impl PartialEq for NodeInstanceRef {
   }
 }
 
-impl Hash for NodeInstanceRef {
+impl<'a> Hash for NodeInstanceRef<'a> {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.node_name.hash(state);
     self.component_name.hash(state);
@@ -91,20 +91,20 @@ impl Hash for NodeInstanceRef {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeRef {
+pub struct NodeRef<'a> {
   pub name: NodeName,
   pub component_name: ComponentName,
-  pub node_instance_ref: Option<NodeInstanceRef>,
+  pub node_instance_ref: Option<NodeInstanceRef<'a>>,
 }
 
-impl Hash for NodeRef {
+impl<'a> Hash for NodeRef<'a> {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.name.hash(state);
     self.component_name.hash(state);
   }
 }
 
-impl PartialEq for NodeRef {
+impl<'a> PartialEq for NodeRef<'a> {
   fn eq(&self, other: &Self) -> bool {
     self.name == other.name && self.component_name == other.component_name
   }
@@ -151,12 +151,12 @@ impl ConnectorIn {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectorOut {
-  pub to_node_instance_ref: Option<NodeInstanceRef>,
+pub struct ConnectorOut<'a> {
+  pub to_node_instance_ref: Option<NodeInstanceRef<'a>>,
 }
 
-impl ConnectorOut {
-  pub fn new() -> ConnectorOut {
+impl<'a> ConnectorOut<'a> {
+  pub fn new() -> ConnectorOut<'a> {
     ConnectorOut {
       to_node_instance_ref: None,
     }
@@ -245,16 +245,16 @@ impl Edge {
   }
 }
 
-pub type ComponentGraph = Graph<Node, Edge>;
+pub type ComponentGraph<'a> = Graph<Node<'a>, Edge>;
 
 #[derive(Debug, Clone)]
-pub struct Component {
+pub struct Component<'a> {
   pub name: ComponentName,
-  pub graph: ComponentGraph,
+  pub graph: ComponentGraph<'a>,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
-impl Component {
+impl<'a> Component<'a> {
   pub fn new(name: ComponentName) -> Self {
     Component {
       name,
