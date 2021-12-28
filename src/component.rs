@@ -24,16 +24,24 @@ bitflags! {
 #[derive(Debug, Clone)]
 pub enum Node {
   Cell(Cell),
-  //ComponentInstanceRef(ComponentInstanceRef),
   ConnectorIn(ConnectorIn),
   ConnectorOut(ConnectorOut),
   Component(ComponentInstanceRef),
 }
 
-pub struct ComponentName(String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ComponentName(pub String);
+
+impl Deref for ComponentName {
+  type Target = String;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NodeName(String);
+pub struct NodeName(pub String);
 
 impl Deref for NodeName {
   type Target = String;
@@ -44,11 +52,49 @@ impl Deref for NodeName {
 }
 
 #[derive(Debug, Clone)]
+pub struct NodeInstanceRef {
+  pub node_name: NodeName,
+  pub component_name: ComponentName,
+  pub instance_name: NodeName,
+  pub node_index: NodeIndex,
+  pub instance: Option<Weak<RefCell<ComponentInstance>>>,
+}
+
+impl NodeInstanceRef {
+  pub fn new(node_name: NodeName, component_name: ComponentName, instance_name: NodeName) -> Self {
+    NodeInstanceRef {
+      node_name,
+      component_name,
+      instance_name,
+      node_index: NodeIndex::new(0),
+      instance: None,
+    }
+  }
+}
+
+impl Eq for NodeInstanceRef {}
+
+impl PartialEq for NodeInstanceRef {
+  fn eq(&self, other: &Self) -> bool {
+    self.node_name == other.node_name
+      && self.component_name == other.component_name
+      && self.instance_name == other.instance_name
+  }
+}
+
+impl Hash for NodeInstanceRef {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.node_name.hash(state);
+    self.component_name.hash(state);
+    self.instance_name.hash(state);
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct NodeRef {
   pub name: NodeName,
-  pub component_name: String,
-  pub component_instance_ref: Option<ComponentInstanceRef>,
-  pub node_index: Option<NodeIndex>,
+  pub component_name: ComponentName,
+  pub node_instance_ref: Option<NodeInstanceRef>,
 }
 
 impl Hash for NodeRef {
@@ -66,25 +112,24 @@ impl PartialEq for NodeRef {
 
 #[derive(Debug, Clone)]
 pub struct ComponentInstanceRef {
-  pub component_name: String,
-  pub instance_name: String,
-  pub owning_instance_id: Option<ComponentInstanceId>,
-  pub instance: Option<Weak<RefCell<ComponentInstance>>>,
+  pub component_name: ComponentName,
+  pub node_name: NodeName,
+  pub instance_graph_node_index: Option<NodeIndex>,
 }
 
 impl Hash for ComponentInstanceRef {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.component_name.hash(state);
-    self.instance_name.hash(state);
-    self.owning_instance_id.hash(state);
+    self.node_name.hash(state);
+    self.instance_graph_node_index.hash(state);
   }
 }
 
 impl PartialEq for ComponentInstanceRef {
   fn eq(&self, other: &Self) -> bool {
     self.component_name == other.component_name
-      && self.instance_name == other.instance_name
-      && self.owning_instance_id == other.owning_instance_id
+      && self.node_name == other.node_name
+      && self.instance_graph_node_index == other.instance_graph_node_index
   }
 }
 
@@ -92,28 +137,29 @@ impl Eq for ComponentInstanceRef {}
 
 #[derive(Debug, Clone, PartialEq, Hash)]
 pub struct ConnectorIn {
+  pub node_name: NodeName,
   pub flags: CellFlags,
+}
+
+impl ConnectorIn {
+  pub fn new(name: String) -> Self {
+    ConnectorIn {
+      node_name: NodeName(name),
+      flags: CellFlags::empty(),
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
 pub struct ConnectorOut {
-  instance_ref: ComponentInstanceRef,
+  pub to_node_instance_ref: Option<NodeInstanceRef>,
 }
 
 impl ConnectorOut {
-  pub fn new(component_name: String, instance_name: String) -> ConnectorOut {
+  pub fn new() -> ConnectorOut {
     ConnectorOut {
-      instance_ref: ComponentInstanceRef {
-        component_name,
-        instance_name,
-        owning_instance_id: None,
-        instance: None,
-      },
+      to_node_instance_ref: None,
     }
-  }
-
-  pub fn instance_ref(&mut self) -> &mut ComponentInstanceRef {
-    &mut self.instance_ref
   }
 }
 
@@ -178,10 +224,15 @@ pub struct Signal {
 }
 
 #[derive(Debug, Clone)]
+pub struct Connection {
+  pub to_connector_name: NodeName,
+}
+
+#[derive(Debug, Clone)]
 pub enum Edge {
   Signal(Signal),
   Association,
-  Connection,
+  Connection(Connection),
 }
 
 impl Edge {
@@ -198,13 +249,13 @@ pub type ComponentGraph = Graph<Node, Edge>;
 
 #[derive(Debug, Clone)]
 pub struct Component {
-  pub name: String,
+  pub name: ComponentName,
   pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
 impl Component {
-  pub fn new(name: String) -> Self {
+  pub fn new(name: ComponentName) -> Self {
     Component {
       name,
       graph: Graph::new(),
@@ -226,7 +277,7 @@ mod tests {
 
   #[test]
   fn it_works() {
-    let mut component = Component::new("AComponent".to_string());
+    let mut component = Component::new(ComponentName("AComponent".to_string()));
 
     let cell_a = component
       .graph

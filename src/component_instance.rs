@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::component::*;
-use crate::orchestrator::ExecutionContext;
+use crate::orchestrator::{ExecutionContext, SignalConnectorOptions};
 
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
@@ -20,10 +20,12 @@ impl ComponentInstanceId {
 #[derive(Debug)]
 pub struct ComponentInstance {
   pub id: ComponentInstanceId,
+  pub node_name: NodeName,
   component: Component,
   fired_nodes: Vec<NodeIndex>,
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
+  incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
   execution_context: ExecutionContext,
   self_rc: Option<Rc<RefCell<ComponentInstance>>>,
@@ -35,16 +37,19 @@ pub struct ComponentInstance {
 
 impl ComponentInstance {
   pub fn new(
+    node_name: NodeName,
     component: &Component,
     init_cells: &[NodeIndex],
     execution_context: ExecutionContext,
   ) -> Rc<RefCell<ComponentInstance>> {
     let instance = ComponentInstance {
       id: ComponentInstanceId::new(),
+      node_name,
       component: component.clone(),
       fired_nodes: vec![],
       active_nodes: vec![],
       staged_nodes: init_cells.to_vec(),
+      incoming_signals: vec![],
       instance_cycle: 0,
       execution_context,
       self_rc: None,
@@ -82,6 +87,8 @@ impl ComponentInstance {
   fn propagate_fired_signals(&mut self) {
     // Set connected signal flags according to connections
     let graph = &mut self.component.graph;
+    self.fired_nodes.extend_from_slice(&self.incoming_signals);
+    self.incoming_signals.clear();
     for cell_index in self.fired_nodes.iter() {
       let mut edges = graph
         .neighbors_directed(*cell_index, Direction::Outgoing)
@@ -117,10 +124,13 @@ impl ComponentInstance {
                 cell.flags.insert(CellFlags::STAGED);
               }
             }
-            Node::ConnectorOut(connector) => {
-              self
-                .execution_context
-                .signal_connector(connector, (&self.id).clone());
+            Node::ConnectorOut(connector_out) => {
+              self.execution_context.signal_connector(
+                &mut SignalConnectorOptions::ConnectorOutIndexForInstanceId(
+                  target_index,
+                  (&self.id).clone(),
+                ),
+              );
             }
             _ => {
               unimplemented!();
@@ -191,6 +201,10 @@ impl ComponentInstance {
       }
     }
   }
+
+  pub fn signal_connector_in(&mut self, node_index: NodeIndex) {
+    self.incoming_signals.push(node_index);
+  }
 }
 
 #[cfg(test)]
@@ -206,7 +220,7 @@ mod tests {
   #[traced_test]
   #[test]
   fn it_works() {
-    let mut component = Component::new("AComponent".to_string());
+    let mut component = Component::new(ComponentName("AComponent".to_string()));
 
     let cell_a = component.graph.add_node(Node::Cell(Cell::one_shot()));
     let cell_b = component.graph.add_node(Node::Cell(Cell::relay()));
@@ -222,6 +236,7 @@ mod tests {
     let init_cells = [cell_a];
 
     let instance_rc = ComponentInstance::new(
+      NodeName("root_node".to_string()),
       &component,
       &init_cells,
       ExecutionContext::new(Rc::downgrade(&Orchestrator::new())),
