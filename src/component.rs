@@ -1,13 +1,10 @@
-use std::cell::RefCell;
 use std::hash::Hash;
 use std::ops::Deref;
-use std::rc::Weak;
 
 use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
 
-use crate::component_instance::ComponentInstance;
 use crate::component_instance::ComponentInstanceId;
 
 // TODO: may be time to use differing structures for components and component_instances
@@ -22,10 +19,10 @@ bitflags! {
 }
 
 #[derive(Debug, Clone)]
-pub enum Node<'a> {
+pub enum Node {
   Cell(Cell),
   ConnectorIn(ConnectorIn),
-  ConnectorOut(ConnectorOut<'a>),
+  ConnectorOut(ConnectorOut),
   Component(ComponentInstanceRef),
 }
 
@@ -52,29 +49,29 @@ impl Deref for NodeName {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeInstanceRef<'a> {
+pub struct NodeInstanceRef {
   pub node_name: NodeName,
   pub component_name: ComponentName,
   pub instance_name: NodeName,
   pub node_index: NodeIndex,
-  pub instance: Option<Weak<RefCell<ComponentInstance<'a>>>>,
+  pub instance_id: Option<ComponentInstanceId>,
 }
 
-impl<'a> NodeInstanceRef<'a> {
+impl NodeInstanceRef {
   pub fn new(node_name: NodeName, component_name: ComponentName, instance_name: NodeName) -> Self {
     NodeInstanceRef {
       node_name,
       component_name,
       instance_name,
       node_index: NodeIndex::new(0),
-      instance: None,
+      instance_id: None,
     }
   }
 }
 
-impl<'a> Eq for NodeInstanceRef<'a> {}
+impl Eq for NodeInstanceRef {}
 
-impl<'a> PartialEq for NodeInstanceRef<'a> {
+impl PartialEq for NodeInstanceRef {
   fn eq(&self, other: &Self) -> bool {
     self.node_name == other.node_name
       && self.component_name == other.component_name
@@ -82,7 +79,7 @@ impl<'a> PartialEq for NodeInstanceRef<'a> {
   }
 }
 
-impl<'a> Hash for NodeInstanceRef<'a> {
+impl Hash for NodeInstanceRef {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.node_name.hash(state);
     self.component_name.hash(state);
@@ -91,20 +88,20 @@ impl<'a> Hash for NodeInstanceRef<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeRef<'a> {
+pub struct NodeRef {
   pub name: NodeName,
   pub component_name: ComponentName,
-  pub node_instance_ref: Option<NodeInstanceRef<'a>>,
+  pub node_instance_ref: Option<NodeInstanceRef>,
 }
 
-impl<'a> Hash for NodeRef<'a> {
+impl Hash for NodeRef {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.name.hash(state);
     self.component_name.hash(state);
   }
 }
 
-impl<'a> PartialEq for NodeRef<'a> {
+impl PartialEq for NodeRef {
   fn eq(&self, other: &Self) -> bool {
     self.name == other.name && self.component_name == other.component_name
   }
@@ -151,12 +148,12 @@ impl ConnectorIn {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectorOut<'a> {
-  pub to_node_instance_ref: Option<NodeInstanceRef<'a>>,
+pub struct ConnectorOut {
+  pub to_node_instance_ref: Option<NodeInstanceRef>,
 }
 
-impl<'a> ConnectorOut<'a> {
-  pub fn new() -> ConnectorOut<'a> {
+impl ConnectorOut {
+  pub fn new() -> ConnectorOut {
     ConnectorOut {
       to_node_instance_ref: None,
     }
@@ -245,16 +242,16 @@ impl Edge {
   }
 }
 
-pub type ComponentGraph<'a> = Graph<Node<'a>, Edge>;
+pub type ComponentGraph = Graph<Node, Edge>;
 
 #[derive(Debug, Clone)]
-pub struct Component<'a> {
+pub struct Component {
   pub name: ComponentName,
-  pub graph: ComponentGraph<'a>,
+  pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
-impl<'a> Component<'a> {
+impl Component {
   pub fn new(name: ComponentName) -> Self {
     Component {
       name,

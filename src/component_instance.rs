@@ -1,8 +1,5 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::component::*;
-use crate::orchestrator::{ExecutionContext, SignalConnectorOptions};
+use crate::orchestrator::ExecutionContext;
 
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
@@ -21,14 +18,13 @@ impl ComponentInstanceId {
 pub struct ComponentInstance<'a> {
   pub id: ComponentInstanceId,
   pub node_name: NodeName,
-  component: Component<'a>,
+  component: Component,
   fired_nodes: Vec<NodeIndex>,
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
   incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
   execution_context: ExecutionContext<'a>,
-  self_rc: Option<Rc<RefCell<ComponentInstance<'a>>>>,
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
@@ -38,11 +34,12 @@ pub struct ComponentInstance<'a> {
 impl<'a> ComponentInstance<'a> {
   pub fn new(
     node_name: NodeName,
-    component: &Component<'a>,
+    component: &Component,
     init_cells: &[NodeIndex],
     execution_context: ExecutionContext<'a>,
-  ) -> Rc<RefCell<ComponentInstance<'a>>> {
-    let instance = ComponentInstance {
+  ) -> ComponentInstance<'a> {
+    trace!("ComponentInstance::new");
+    ComponentInstance {
       id: ComponentInstanceId::new(),
       node_name,
       component: component.clone(),
@@ -52,11 +49,7 @@ impl<'a> ComponentInstance<'a> {
       incoming_signals: vec![],
       instance_cycle: 0,
       execution_context,
-      self_rc: None,
-    };
-    let instance_ref = Rc::new(RefCell::new(instance));
-    instance_ref.borrow_mut().self_rc = Some(instance_ref.clone());
-    return instance_ref;
+    }
   }
 
   // pub fn weak(&self) -> Weak<RefCell<ComponentInstance>> {
@@ -65,7 +58,7 @@ impl<'a> ComponentInstance<'a> {
   // }
 
   pub fn is_active(&self) -> bool {
-    self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0
+    self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0 || self.incoming_signals.len() > 0
   }
 
   pub fn run(&mut self) {
@@ -124,13 +117,10 @@ impl<'a> ComponentInstance<'a> {
                 cell.flags.insert(CellFlags::STAGED);
               }
             }
-            Node::ConnectorOut(connector_out) => {
-              self.execution_context.signal_connector(
-                &mut SignalConnectorOptions::ConnectorOutIndexForInstanceId(
-                  target_index,
-                  (&self.id).clone(),
-                ),
-              );
+            Node::ConnectorOut(_) => {
+              self
+                .execution_context
+                .signal_connector_out(target_index, (&self.id).clone());
             }
             _ => {
               unimplemented!();
@@ -209,11 +199,9 @@ impl<'a> ComponentInstance<'a> {
 
 #[cfg(test)]
 mod tests {
-  use std::rc::Rc;
-
   use crate::component::*;
   use crate::component_instance::ComponentInstance;
-  use crate::orchestrator::{ExecutionContext, Orchestrator};
+  use crate::orchestrator::ExecutionContext;
 
   use tracing_test::traced_test;
 
@@ -235,13 +223,12 @@ mod tests {
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
 
-    let instance_rc = ComponentInstance::new(
+    let mut instance = ComponentInstance::new(
       NodeName("root_node".to_string()),
       &component,
       &init_cells,
-      ExecutionContext::new(|options| todo!()),
+      ExecutionContext::new(|_, _| {}),
     );
-    let mut instance = instance_rc.borrow_mut();
 
     instance.run();
 
