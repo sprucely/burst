@@ -14,30 +14,6 @@ use std::collections::HashSet;
 // summary of error handling at https://www.reddit.com/r/rust/comments/gqe57x/what_are_you_using_for_error_handling/
 // anyhow for applications, thiserror for libraries (thiserror helps to not expose internal error handling to users)
 
-pub struct ExecutionContext<'a> {
-  callback: Box<dyn FnMut(NodeIndex, ComponentInstanceId) + 'a>,
-}
-
-impl<'a> std::fmt::Debug for ExecutionContext<'a> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "ExecutionContext")
-  }
-}
-
-impl<'a> ExecutionContext<'a> {
-  pub fn new(
-    signal_connector: impl FnMut(NodeIndex, ComponentInstanceId) + 'a,
-  ) -> ExecutionContext<'a> {
-    ExecutionContext {
-      callback: Box::new(signal_connector),
-    }
-  }
-
-  pub fn signal_connector_out(&mut self, node_index: NodeIndex, instance_id: ComponentInstanceId) {
-    (self.callback)(node_index, instance_id);
-  }
-}
-
 /// connector connection connector
 /// ------<in to----from out<-----
 /// ----->out from----to in>------
@@ -58,29 +34,53 @@ pub struct InstanceConnection {
 }
 
 #[derive(Debug)]
-pub struct Orchestrator<'a> {
+pub struct SignalRequest {
+  pub instance_id: ComponentInstanceId,
+  pub node_index: NodeIndex,
+}
+
+#[derive(Debug)]
+pub struct Context {
+  signal_requests: Vec<SignalRequest>,
+}
+
+impl Context {
+  pub fn new() -> Context {
+    Context {
+      signal_requests: vec![],
+    }
+  }
+
+  pub(crate) fn signal_connector_out(
+    &mut self,
+    node_index: NodeIndex,
+    instance_id: ComponentInstanceId,
+  ) {
+    self.signal_requests.push(SignalRequest {
+      instance_id,
+      node_index,
+    });
+  }
+}
+#[derive(Debug)]
+pub struct OrchestratorData {
   components: HashMap<ComponentName, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
-  instance_ids_to_instances: HashMap<ComponentInstanceId, ComponentInstance<'a>>,
   node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef, ComponentInstanceId>,
   active_instance_ids: HashSet<ComponentInstanceId>,
   clock_cycle: usize,
   inactivate_ids: Vec<ComponentInstanceId>,
   // keep track of all connections between component instances
-  connections: InstanceGraph,
+  pub(crate) connections: InstanceGraph,
   root_component_name: Option<ComponentName>,
   root_instance_id: Option<ComponentInstanceId>,
+  pub(crate) instance_ids_to_instances: HashMap<ComponentInstanceId, ComponentInstance>,
 }
 
-impl<'a> Orchestrator<'a> {
-  // pub fn new(orchestrator_data: &'a mut OrchestratorData<'a>) -> Self {
-  //   orchestrator_data.as_orchestrator()
-  // }
-
-  pub fn new() -> Self {
-    Orchestrator {
+impl OrchestratorData {
+  pub fn new() -> OrchestratorData {
+    OrchestratorData {
       components: HashMap::new(),
-      instance_ids_to_instances: HashMap::new(),
       node_instance_refs_to_owner_ids: HashMap::new(),
       active_instance_ids: HashSet::new(),
       clock_cycle: 0,
@@ -88,6 +88,7 @@ impl<'a> Orchestrator<'a> {
       connections: Graph::new(),
       root_component_name: None,
       root_instance_id: None,
+      instance_ids_to_instances: HashMap::new(),
     }
   }
 
@@ -100,36 +101,83 @@ impl<'a> Orchestrator<'a> {
     self.components.insert(component.name.clone(), component);
     self
   }
+}
+
+#[derive(Debug)]
+pub struct Orchestrator<'a> {
+  data: &'a mut OrchestratorData,
+}
+
+impl<'a> Orchestrator<'a> {
+  // pub fn new(orchestrator_data: &'a mut OrchestratorData) -> Self {
+  //   orchestrator_data.as_orchestrator()
+  // }
+
+  pub fn new(data: &'a mut OrchestratorData) -> Self {
+    Orchestrator { data }
+  }
+
+  pub fn add_component(&mut self, component: Component) {
+    self.data.add_component(component);
+  }
+
+  pub fn add_root_component(&mut self, component: Component) -> &mut Self {
+    self.data.add_root_component(component);
+    self
+  }
 
   pub fn run(&mut self) -> &mut Self {
-    self.active_instance_ids.clear();
-    for (id, component_instance) in self.instance_ids_to_instances.iter() {
+    self.data.active_instance_ids.clear();
+    for (id, component_instance) in self.data.instance_ids_to_instances.iter() {
       if component_instance.is_active() {
-        self.active_instance_ids.insert(id.clone());
+        self.data.active_instance_ids.insert(id.clone());
       }
     }
 
-    for _ in Stepper::new(self) {}
+    let stepper = Stepper {
+      data: &mut self.data,
+    };
+    for _tmp in stepper {}
+    //while self.step(&mut self.data.active_instance_ids) {}
 
     self
   }
 
-  pub fn step(&mut self) -> bool {
-    for id in self.active_instance_ids.iter() {
-      let component_instance = self.instance_ids_to_instances.get_mut(id).unwrap();
-      let is_active = component_instance.step();
+  fn step(
+    active_instance_ids: &mut HashSet<ComponentInstanceId>,
+    instance_ids_to_instances: &mut HashMap<ComponentInstanceId, ComponentInstance>,
+    inactivate_ids: &mut Vec<ComponentInstanceId>,
+    clock_cycle: &mut usize,
+    connections: &InstanceGraph,
+  ) -> bool {
+    let mut context = Context::new();
+
+    for id in active_instance_ids.iter() {
+      let component_instance = instance_ids_to_instances.get_mut(&id).unwrap();
+
+      let is_active = component_instance.step(&mut context);
+
       if !is_active {
-        self.inactivate_ids.push(id.clone());
+        inactivate_ids.push(id.clone());
       }
     }
 
-    for id in self.inactivate_ids.iter() {
-      self.active_instance_ids.remove(id);
+    for tmp in context.signal_requests {
+      Orchestrator::signal_connector_out(
+        tmp.node_index,
+        tmp.instance_id,
+        &connections,
+        instance_ids_to_instances,
+      );
     }
-    self.inactivate_ids.clear();
-    self.clock_cycle += 1;
 
-    self.active_instance_ids.len() > 0
+    for id in inactivate_ids.iter() {
+      active_instance_ids.remove(id);
+    }
+    inactivate_ids.clear();
+    *clock_cycle += 1;
+
+    active_instance_ids.len() > 0
   }
 
   // fn instantiate_component(&mut self, id: &String) -> ComponentInstance {
@@ -177,7 +225,7 @@ impl<'a> Orchestrator<'a> {
   // fn resolve_instance(
   //   &mut self,
   //   node_instance_ref: &mut NodeInstanceRef,
-  // ) -> Option<&mut ComponentInstance<'a>> {
+  // ) -> Option<&mut ComponentInstance> {
   //   match &node_instance_ref.instance_id {
   //     Some(instance_id) => {
   //       // instance has previously been resolved for this ref
@@ -227,29 +275,20 @@ impl<'a> Orchestrator<'a> {
   // }
 
   pub fn signal_connector_in(&mut self, node_index: NodeIndex) -> &mut Self {
-    match self.root_instance_id {
+    match self.data.root_instance_id {
       Some(ref root_instance_id) => {
         let root_instance_id = root_instance_id.clone();
         self.signal_connector_in_on_instance(root_instance_id, node_index)
       }
-      None => match self.root_component_name {
+      None => match self.data.root_component_name {
         Some(ref root_component_name) => {
-          let root_component = self.components.get(root_component_name).unwrap();
-          let root_component_instance = ComponentInstance::new(
-            NodeName("root".to_string()),
-            root_component,
-            &[],
-            ExecutionContext::new({
-              //
-              |node_index, instance_id| {
-                //
-                // self.signal_connector_out(node_index, instance_id);
-              }
-            }),
-          );
+          let root_component = self.data.components.get(root_component_name).unwrap();
+          let root_component_instance =
+            ComponentInstance::new(NodeName("root".to_string()), root_component, &[]);
           let root_component_instance_id = root_component_instance.id.clone();
-          self.root_instance_id = Some(root_component_instance_id.clone());
+          self.data.root_instance_id = Some(root_component_instance_id.clone());
           self
+            .data
             .instance_ids_to_instances
             .insert(root_component_instance.id.clone(), root_component_instance);
           self.signal_connector_in_on_instance(root_component_instance_id, node_index)
@@ -269,26 +308,31 @@ impl<'a> Orchestrator<'a> {
     node_index: NodeIndex,
   ) {
     let instance = self
+      .data
       .instance_ids_to_instances
       .get_mut(&instance_id)
       .unwrap();
     instance.signal_connector_in(node_index);
   }
 
-  fn signal_connector_out(&mut self, node_index: NodeIndex, from_instance_id: ComponentInstanceId) {
-    if let Some((from_instance_node_index, _)) = self
-      .connections
+  fn signal_connector_out(
+    node_index: NodeIndex,
+    from_instance_id: ComponentInstanceId,
+    connections: &InstanceGraph,
+    instance_ids_to_instances: &mut HashMap<ComponentInstanceId, ComponentInstance>,
+  ) {
+    if let Some((from_instance_node_index, _)) = connections
       .node_references()
       .find(|&(_, id)| id == &from_instance_id)
     {
-      if let Some(edge) = self
-        .connections
+      if let Some(edge) = connections
         .edges_directed(from_instance_node_index, Direction::Outgoing)
         .find(|edge| edge.weight().from_connector_index == node_index)
       {
         let to_instance_node_index = edge.weight().to_connector_index;
-        let to_instance_id = self.connections[edge.target()].clone();
-        self.signal_connector_in_on_instance(to_instance_id, to_instance_node_index)
+        let to_instance_id = connections[edge.target()].clone();
+        let instance = instance_ids_to_instances.get_mut(&to_instance_id).unwrap();
+        instance.signal_connector_in(to_instance_node_index);
       }
     }
   }
@@ -296,21 +340,33 @@ impl<'a> Orchestrator<'a> {
 
 pub struct StepStatus {}
 
-pub struct Stepper<'a, 'b: 'a> {
-  orchestrator: &'a mut Orchestrator<'b>,
+pub struct Stepper<'a> {
+  data: &'a mut OrchestratorData,
 }
 
-impl<'a, 'b: 'a> Stepper<'a, 'b> {
-  pub fn new(orchestrator: &'a mut Orchestrator<'b>) -> Self {
-    Self { orchestrator }
-  }
-}
+// impl Stepper<'_> {
+//   pub fn new(
+//     orchestrator: &mut Orchestrator,
+//     active_instance_ids: &mut HashSet<ComponentInstanceId>,
+//   ) -> Self {
+//     Self {
+//       orchestrator,
+//       active_instance_ids,
+//     }
+//   }
+//}
 
-impl<'a, 'b: 'a> Iterator for Stepper<'a, 'b> {
+impl Iterator for Stepper<'_> {
   type Item = StepStatus;
 
   fn next(&mut self) -> Option<Self::Item> {
-    if self.orchestrator.step() {
+    if Orchestrator::step(
+      &mut self.data.active_instance_ids,
+      &mut self.data.instance_ids_to_instances,
+      &mut self.data.inactivate_ids,
+      &mut self.data.clock_cycle,
+      &self.data.connections,
+    ) {
       Some(StepStatus {})
     } else {
       None
@@ -349,14 +405,14 @@ mod tests {
       .graph
       .add_edge(cell_b, cell_d, Edge::new_signal(0));
 
-    //let mut data = OrchestratorData::new();
-    let mut orchestrator = Orchestrator::new();
+    let mut data = OrchestratorData::new();
+    let mut orchestrator = Orchestrator::new(&mut data);
     let orchestrator = orchestrator.add_root_component(component);
     let orchestrator = orchestrator.signal_connector_in(connector_in);
     let orchestrator = orchestrator.run();
 
     //let stepper = Stepper::new(&mut orchestrator);
 
-    assert_eq!(orchestrator.clock_cycle, 4);
+    assert_eq!(orchestrator.data.clock_cycle, 4);
   }
 }

@@ -1,5 +1,5 @@
 use crate::component::*;
-use crate::orchestrator::ExecutionContext;
+use crate::orchestrator::Context;
 
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
@@ -15,7 +15,7 @@ impl ComponentInstanceId {
 }
 
 #[derive(Debug)]
-pub struct ComponentInstance<'a> {
+pub struct ComponentInstance {
   pub id: ComponentInstanceId,
   pub node_name: NodeName,
   component: Component,
@@ -24,20 +24,18 @@ pub struct ComponentInstance<'a> {
   staged_nodes: Vec<NodeIndex>,
   incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
-  execution_context: ExecutionContext<'a>,
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
 // rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
 // It will also help identify boundaries for splitting processing across multiple threads.
 
-impl<'a> ComponentInstance<'a> {
+impl ComponentInstance {
   pub fn new(
     node_name: NodeName,
     component: &Component,
     init_cells: &[NodeIndex],
-    execution_context: ExecutionContext<'a>,
-  ) -> ComponentInstance<'a> {
+  ) -> ComponentInstance {
     trace!("ComponentInstance::new");
     ComponentInstance {
       id: ComponentInstanceId::new(),
@@ -48,7 +46,6 @@ impl<'a> ComponentInstance<'a> {
       staged_nodes: init_cells.to_vec(),
       incoming_signals: vec![],
       instance_cycle: 0,
-      execution_context,
     }
   }
 
@@ -61,13 +58,13 @@ impl<'a> ComponentInstance<'a> {
     self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0 || self.incoming_signals.len() > 0
   }
 
-  pub fn run(&mut self) {
-    while self.step() {}
+  pub fn run(&mut self, context: &mut Context) {
+    while self.step(context) {}
   }
 
-  pub fn step(&mut self) -> bool {
+  pub fn step(&mut self, context: &mut Context) -> bool {
     self.propagate_fired_signals();
-    self.stage_signaled_and_associated_nodes();
+    self.stage_signaled_and_associated_nodes(context);
     if self.staged_nodes.len() > 0 {
       std::mem::swap(&mut self.active_nodes, &mut self.staged_nodes);
       self.staged_nodes.clear();
@@ -99,7 +96,7 @@ impl<'a> ComponentInstance<'a> {
     }
   }
 
-  fn stage_signaled_and_associated_nodes(&mut self) {
+  fn stage_signaled_and_associated_nodes(&mut self, context: &mut Context) {
     // Stage connected cells that are not already staged
     let graph = &mut self.component.graph;
     for node_index in self.fired_nodes.iter() {
@@ -118,9 +115,7 @@ impl<'a> ComponentInstance<'a> {
               }
             }
             Node::ConnectorOut(_) => {
-              self
-                .execution_context
-                .signal_connector_out(target_index, (&self.id).clone());
+              context.signal_connector_out(target_index, (&self.id).clone());
             }
             _ => {
               unimplemented!();
@@ -201,7 +196,7 @@ impl<'a> ComponentInstance<'a> {
 mod tests {
   use crate::component::*;
   use crate::component_instance::ComponentInstance;
-  use crate::orchestrator::ExecutionContext;
+  use crate::orchestrator::{Context, OrchestratorData};
 
   use tracing_test::traced_test;
 
@@ -223,14 +218,16 @@ mod tests {
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
 
-    let mut instance = ComponentInstance::new(
-      NodeName("root_node".to_string()),
-      &component,
-      &init_cells,
-      ExecutionContext::new(|_, _| {}),
-    );
+    let mut instance =
+      ComponentInstance::new(NodeName("root_node".to_string()), &component, &init_cells);
 
-    instance.run();
+    let mut data = OrchestratorData::new();
+
+    data.add_root_component(component);
+
+    let mut context = Context::new();
+
+    instance.run(&mut context);
 
     assert_eq!(instance.instance_cycle, 4);
   }
