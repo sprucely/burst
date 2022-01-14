@@ -1,11 +1,10 @@
 use std::hash::Hash;
 use std::ops::Deref;
+use std::rc::Rc;
 
 use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
-
-use crate::component_instance::ComponentInstanceId;
 
 // TODO: may be time to use differing structures for components and component_instances
 // since components are more about design-time considerations and component_instances runtime
@@ -54,7 +53,7 @@ pub struct NodeInstanceRef {
   pub component_name: ComponentName,
   pub instance_name: NodeName,
   pub node_index: NodeIndex,
-  pub instance_id: Option<ComponentInstanceId>,
+  pub instance_id: Option<Rc<str>>,
 }
 
 impl NodeInstanceRef {

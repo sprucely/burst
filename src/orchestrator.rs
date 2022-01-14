@@ -6,6 +6,7 @@ use crate::component::*;
 use crate::component_instance::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 // TODO: Add threadpool concurrency via rayon crate (https://docs.rs/rayon/)
 // exellent summary of various crates at https://www.reddit.com/r/rust/comments/djzd5t/which_asyncconcurrency_crate_to_choose_from/
@@ -25,7 +26,7 @@ use std::collections::HashSet;
 //   pub to_connector_ref: NodeRef,
 // }
 
-pub type InstanceGraph = Graph<ComponentInstanceId, InstanceConnection>;
+pub type InstanceGraph = Graph<Rc<str>, InstanceConnection>;
 
 #[derive(Debug, Clone)]
 pub struct InstanceConnection {
@@ -35,7 +36,7 @@ pub struct InstanceConnection {
 
 #[derive(Debug)]
 pub struct SignalRequest {
-  pub instance_id: ComponentInstanceId,
+  pub instance_id: Rc<str>,
   pub node_index: NodeIndex,
 }
 
@@ -51,11 +52,7 @@ impl Context {
     }
   }
 
-  pub(crate) fn signal_connector_out(
-    &mut self,
-    node_index: NodeIndex,
-    instance_id: ComponentInstanceId,
-  ) {
+  pub(crate) fn signal_connector_out(&mut self, node_index: NodeIndex, instance_id: Rc<str>) {
     self.signal_requests.push(SignalRequest {
       instance_id,
       node_index,
@@ -66,15 +63,15 @@ impl Context {
 pub struct OrchestratorData {
   components: HashMap<ComponentName, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
-  node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef, ComponentInstanceId>,
-  active_instance_ids: HashSet<ComponentInstanceId>,
+  node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef, Rc<str>>,
+  active_instance_ids: HashSet<Rc<str>>,
   clock_cycle: usize,
-  inactivate_ids: Vec<ComponentInstanceId>,
+  inactivate_ids: Vec<Rc<str>>,
   // keep track of all connections between component instances
   pub(crate) connections: InstanceGraph,
   root_component_name: Option<ComponentName>,
-  root_instance_id: Option<ComponentInstanceId>,
-  pub(crate) instance_ids_to_instances: HashMap<ComponentInstanceId, ComponentInstance>,
+  root_instance_id: Option<Rc<str>>,
+  pub(crate) instance_ids_to_instances: HashMap<Rc<str>, ComponentInstance>,
 }
 
 impl OrchestratorData {
@@ -144,16 +141,16 @@ impl<'a> Orchestrator<'a> {
   }
 
   fn step(
-    active_instance_ids: &mut HashSet<ComponentInstanceId>,
-    instance_ids_to_instances: &mut HashMap<ComponentInstanceId, ComponentInstance>,
-    inactivate_ids: &mut Vec<ComponentInstanceId>,
+    active_instance_ids: &mut HashSet<Rc<str>>,
+    instance_ids_to_instances: &mut HashMap<Rc<str>, ComponentInstance>,
+    inactivate_ids: &mut Vec<Rc<str>>,
     clock_cycle: &mut usize,
     connections: &InstanceGraph,
   ) -> bool {
     let mut context = Context::new();
 
     for id in active_instance_ids.iter() {
-      let component_instance = instance_ids_to_instances.get_mut(&id).unwrap();
+      let component_instance = instance_ids_to_instances.get_mut(id).unwrap();
 
       let is_active = component_instance.step(&mut context);
 
@@ -189,7 +186,7 @@ impl<'a> Orchestrator<'a> {
   // fn resolve_connected_instance(
   //   &'a mut self,
   //   connector_out: &mut ConnectorOut,
-  //   connector_out_owner_instance_id: Option<ComponentInstanceId>,
+  //   connector_out_owner_instance_id: Option<Rc<str>>,
   //   connector_out_index: NodeIndex,
   // ) -> Option<(Rc<RefCell<ComponentInstance>>, NodeIndex)> {
   //   match connector_out.to_node_instance_ref {
@@ -207,7 +204,7 @@ impl<'a> Orchestrator<'a> {
   //     None => {
   //       // todo: rethink use of graph for managing instances and connections
   //       /*
-  //       ComponentInstanceId is a unique single hashable value that can allow quick lookup of instances
+  //       Rc<str> is a unique single hashable value that can allow quick lookup of instances
   //       If instances are stored in a graph, then NodeIndex can be used to lookup instances, but it would
   //       not remain stable without using the less performant StableGraph.
 
@@ -302,11 +299,7 @@ impl<'a> Orchestrator<'a> {
     self
   }
 
-  pub fn signal_connector_in_on_instance(
-    &mut self,
-    instance_id: ComponentInstanceId,
-    node_index: NodeIndex,
-  ) {
+  pub fn signal_connector_in_on_instance(&mut self, instance_id: Rc<str>, node_index: NodeIndex) {
     let instance = self
       .data
       .instance_ids_to_instances
@@ -317,9 +310,9 @@ impl<'a> Orchestrator<'a> {
 
   fn signal_connector_out(
     node_index: NodeIndex,
-    from_instance_id: ComponentInstanceId,
+    from_instance_id: Rc<str>,
     connections: &InstanceGraph,
-    instance_ids_to_instances: &mut HashMap<ComponentInstanceId, ComponentInstance>,
+    instance_ids_to_instances: &mut HashMap<Rc<str>, ComponentInstance>,
   ) {
     if let Some((from_instance_node_index, _)) = connections
       .node_references()
@@ -347,7 +340,7 @@ pub struct Stepper<'a> {
 // impl Stepper<'_> {
 //   pub fn new(
 //     orchestrator: &mut Orchestrator,
-//     active_instance_ids: &mut HashSet<ComponentInstanceId>,
+//     active_instance_ids: &mut HashSet<Rc<str>>,
 //   ) -> Self {
 //     Self {
 //       orchestrator,
@@ -377,8 +370,8 @@ impl Iterator for Stepper<'_> {
 #[derive(Debug, Clone)]
 pub enum SignalConnectorOptions {
   ConnectorInIndex(NodeIndex),
-  ConnectorInIndexForInstanceId(NodeIndex, ComponentInstanceId),
-  ConnectorOutIndexForInstanceId(NodeIndex, ComponentInstanceId),
+  ConnectorInIndexForInstanceId(NodeIndex, Rc<str>),
+  ConnectorOutIndexForInstanceId(NodeIndex, Rc<str>),
 }
 
 #[cfg(test)]
@@ -407,12 +400,11 @@ mod tests {
 
     let mut data = OrchestratorData::new();
     let mut orchestrator = Orchestrator::new(&mut data);
-    let orchestrator = orchestrator.add_root_component(component);
-    let orchestrator = orchestrator.signal_connector_in(connector_in);
-    let orchestrator = orchestrator.run();
+    orchestrator
+      .add_root_component(component)
+      .signal_connector_in(connector_in)
+      .run();
 
-    //let stepper = Stepper::new(&mut orchestrator);
-
-    assert_eq!(orchestrator.data.clock_cycle, 4);
+    assert_eq!(orchestrator.data.clock_cycle, 3);
   }
 }

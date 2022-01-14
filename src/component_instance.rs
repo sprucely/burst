@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::component::*;
 use crate::orchestrator::Context;
 
@@ -5,18 +7,9 @@ use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ComponentInstanceId(String);
-
-impl ComponentInstanceId {
-  pub fn new() -> ComponentInstanceId {
-    ComponentInstanceId(cuid::cuid().unwrap())
-  }
-}
-
 #[derive(Debug)]
 pub struct ComponentInstance {
-  pub id: ComponentInstanceId,
+  pub id: Rc<str>,
   pub node_name: NodeName,
   component: Component,
   fired_nodes: Vec<NodeIndex>,
@@ -38,7 +31,7 @@ impl ComponentInstance {
   ) -> ComponentInstance {
     trace!("ComponentInstance::new");
     ComponentInstance {
-      id: ComponentInstanceId::new(),
+      id: Rc::from(cuid::cuid().unwrap()),
       node_name,
       component: component.clone(),
       fired_nodes: vec![],
@@ -48,11 +41,6 @@ impl ComponentInstance {
       instance_cycle: 0,
     }
   }
-
-  // pub fn weak(&self) -> Weak<RefCell<ComponentInstance>> {
-  //   let Some(component_instance_rc) = self.self_rc.clone();
-  //   return Rc::downgrade(&component_instance_rc);
-  // }
 
   pub fn is_active(&self) -> bool {
     self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0 || self.incoming_signals.len() > 0
@@ -115,7 +103,7 @@ impl ComponentInstance {
               }
             }
             Node::ConnectorOut(_) => {
-              context.signal_connector_out(target_index, (&self.id).clone());
+              context.signal_connector_out(target_index, self.id.clone());
             }
             _ => {
               unimplemented!();
