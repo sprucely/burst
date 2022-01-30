@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::hash::Hash;
-use std::ops::Deref;
 use std::rc::Rc;
 
 use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
+
+use crate::component_instance::ComponentInstance;
+use crate::orchestrator::InstanceConnectorRef;
 
 // TODO: may be time to use differing structures for components and component_instances
 // since components are more about design-time considerations and component_instances runtime
@@ -19,154 +22,98 @@ bitflags! {
 
 #[derive(Debug, Clone)]
 pub enum Node {
-  Cell(Cell),
-  ConnectorIn(ConnectorIn),
-  ConnectorOut(ConnectorOut),
-  Component(ComponentInstanceRef),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ComponentName(pub String);
-
-impl Deref for ComponentName {
-  type Target = String;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NodeName(pub String);
-
-impl Deref for NodeName {
-  type Target = String;
-
-  fn deref(&self) -> &String {
-    &self.0
-  }
+  Cell(CellNode),
+  ConnectorIn(ConnectorInNode),
+  ConnectorOut(ConnectorOutNode),
+  Component(InstanceRefNode),
 }
 
 #[derive(Debug, Clone)]
-pub struct NodeInstanceRef {
-  pub node_name: NodeName,
-  pub component_name: ComponentName,
-  pub instance_name: NodeName,
-  pub node_index: NodeIndex,
-  pub instance_id: Option<Rc<str>>,
+pub struct InstanceRefNode {
+  pub node_name: String,
+  pub component_name: String,
+  pub instance_ix: Option<NodeIndex>,
 }
 
-impl NodeInstanceRef {
-  pub fn new(node_name: NodeName, component_name: ComponentName, instance_name: NodeName) -> Self {
-    NodeInstanceRef {
+impl InstanceRefNode {
+  pub fn new(node_name: String, component_name: String) -> Self {
+    InstanceRefNode {
       node_name,
       component_name,
-      instance_name,
-      node_index: NodeIndex::new(0),
-      instance_id: None,
+      instance_ix: None,
     }
   }
 }
 
-impl Eq for NodeInstanceRef {}
+impl Eq for InstanceRefNode {}
 
-impl PartialEq for NodeInstanceRef {
+impl PartialEq for InstanceRefNode {
   fn eq(&self, other: &Self) -> bool {
-    self.node_name == other.node_name
-      && self.component_name == other.component_name
-      && self.instance_name == other.instance_name
+    self.node_name == other.node_name && self.component_name == other.component_name
   }
 }
 
-impl Hash for NodeInstanceRef {
+impl Hash for InstanceRefNode {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.node_name.hash(state);
     self.component_name.hash(state);
-    self.instance_name.hash(state);
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct NodeRef {
-  pub name: NodeName,
-  pub component_name: ComponentName,
-  pub node_instance_ref: Option<NodeInstanceRef>,
+#[derive(Debug)]
+pub struct InstanceGraphNode {
+  pub component_name: String,
+  pub instance: Option<Rc<RefCell<ComponentInstance>>>,
 }
 
-impl Hash for NodeRef {
-  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-    self.name.hash(state);
-    self.component_name.hash(state);
-  }
-}
-
-impl PartialEq for NodeRef {
-  fn eq(&self, other: &Self) -> bool {
-    self.name == other.name && self.component_name == other.component_name
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct ComponentInstanceRef {
-  pub component_name: ComponentName,
-  pub node_name: NodeName,
-  pub instance_graph_node_index: Option<NodeIndex>,
-}
-
-impl Hash for ComponentInstanceRef {
+impl Hash for InstanceGraphNode {
   fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
     self.component_name.hash(state);
-    self.node_name.hash(state);
-    self.instance_graph_node_index.hash(state);
   }
 }
 
-impl PartialEq for ComponentInstanceRef {
+impl PartialEq for InstanceGraphNode {
   fn eq(&self, other: &Self) -> bool {
     self.component_name == other.component_name
-      && self.node_name == other.node_name
-      && self.instance_graph_node_index == other.instance_graph_node_index
   }
 }
 
-impl Eq for ComponentInstanceRef {}
-
 #[derive(Debug, Clone, PartialEq, Hash)]
-pub struct ConnectorIn {
-  pub node_name: NodeName,
+pub struct ConnectorInNode {
+  pub node_name: String,
   pub flags: CellFlags,
 }
 
-impl ConnectorIn {
-  pub fn new(name: String) -> Self {
-    ConnectorIn {
-      node_name: NodeName(name),
+impl ConnectorInNode {
+  pub fn new(node_name: String) -> Self {
+    ConnectorInNode {
+      node_name,
       flags: CellFlags::empty(),
     }
   }
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectorOut {
-  pub to_node_instance_ref: Option<NodeInstanceRef>,
+pub struct ConnectorOutNode {
+  pub to_instance_connector: Option<InstanceConnectorRef>,
 }
 
-impl ConnectorOut {
-  pub fn new() -> ConnectorOut {
-    ConnectorOut {
-      to_node_instance_ref: None,
+impl ConnectorOutNode {
+  pub fn new() -> ConnectorOutNode {
+    ConnectorOutNode {
+      to_instance_connector: None,
     }
   }
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
-pub struct Cell {
+pub struct CellNode {
   pub cell_type: CellType,
   pub flags: CellFlags,
   pub signals: u32,
 }
 
-impl Cell {
+impl CellNode {
   fn new(tp: CellType) -> Self {
     Self {
       cell_type: tp,
@@ -221,7 +168,15 @@ pub struct Signal {
 
 #[derive(Debug, Clone)]
 pub struct Connection {
-  pub to_connector_name: NodeName,
+  pub instance_connector_name: Rc<str>,
+}
+
+impl Connection {
+  pub fn new(to_connector_name: String) -> Self {
+    Connection {
+      instance_connector_name: Rc::from(to_connector_name),
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -245,13 +200,13 @@ pub type ComponentGraph = Graph<Node, Edge>;
 
 #[derive(Debug, Clone)]
 pub struct Component {
-  pub name: ComponentName,
+  pub name: String,
   pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
 impl Component {
-  pub fn new(name: ComponentName) -> Self {
+  pub fn new(name: String) -> Self {
     Component {
       name,
       graph: Graph::new(),
@@ -266,21 +221,21 @@ mod tests {
 
   #[test]
   fn it_works2() {
-    let node_name = NodeName("test".to_string());
+    let node_name = "test".to_string();
 
     assert_eq!(node_name.to_string(), "test");
   }
 
   #[test]
   fn it_works() {
-    let mut component = Component::new(ComponentName("AComponent".to_string()));
+    let mut component = Component::new("AComponent".to_string());
 
     let cell_a = component
       .graph
-      .add_node(Node::Cell(Cell::new(CellType::Relay)));
+      .add_node(Node::Cell(CellNode::new(CellType::Relay)));
     let cell_b = component
       .graph
-      .add_node(Node::Cell(Cell::new(CellType::Relay)));
+      .add_node(Node::Cell(CellNode::new(CellType::Relay)));
     component
       .graph
       .add_edge(cell_a, cell_b, Edge::new_signal(0));

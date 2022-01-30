@@ -1,11 +1,14 @@
+use carboxyl::Stream;
 use petgraph::graph::NodeIndex;
-use petgraph::visit::{EdgeRef, IntoNodeReferences};
-use petgraph::{Direction, Graph};
+use petgraph::stable_graph::StableGraph;
+use petgraph::Direction;
 
 use crate::component::*;
 use crate::component_instance::*;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::rc::Rc;
 
 // TODO: Add threadpool concurrency via rayon crate (https://docs.rs/rayon/)
@@ -26,7 +29,7 @@ use std::rc::Rc;
 //   pub to_connector_ref: NodeRef,
 // }
 
-pub type InstanceGraph = Graph<Rc<str>, InstanceConnection>;
+pub type InstanceGraph = StableGraph<InstanceGraphNode, InstanceConnection>;
 
 #[derive(Debug, Clone)]
 pub struct InstanceConnection {
@@ -34,58 +37,60 @@ pub struct InstanceConnection {
   to_connector_index: NodeIndex,
 }
 
-#[derive(Debug)]
-pub struct SignalRequest {
-  pub instance_id: Rc<str>,
-  pub node_index: NodeIndex,
+//todo: replace SignalRequest with proper signal system
+// https://docs.rs/carboxyl/latest/carboxyl/
+// https://crates.io/crates/event-listener-primitives
+
+#[derive(Debug, Clone)]
+pub struct InstanceConnectorRef {
+  pub instance_ix: NodeIndex,
+  pub connector_ix: NodeIndex,
 }
 
-#[derive(Debug)]
-pub struct Context {
-  signal_requests: Vec<SignalRequest>,
-}
-
-impl Context {
-  pub fn new() -> Context {
-    Context {
-      signal_requests: vec![],
-    }
-  }
-
-  pub(crate) fn signal_connector_out(&mut self, node_index: NodeIndex, instance_id: Rc<str>) {
-    self.signal_requests.push(SignalRequest {
-      instance_id,
-      node_index,
-    });
-  }
-}
-#[derive(Debug)]
 pub struct OrchestratorData {
-  components: HashMap<ComponentName, Component>,
+  components: HashMap<String, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
-  node_instance_refs_to_owner_ids: HashMap<NodeInstanceRef, Rc<str>>,
-  active_instance_ids: HashSet<Rc<str>>,
+  active_instance_ixs: HashSet<NodeIndex>,
   clock_cycle: usize,
-  inactivate_ids: Vec<Rc<str>>,
   // keep track of all connections between component instances
-  pub(crate) connections: InstanceGraph,
-  root_component_name: Option<ComponentName>,
-  root_instance_id: Option<Rc<str>>,
-  pub(crate) instance_ids_to_instances: HashMap<Rc<str>, ComponentInstance>,
+  pub(crate) instance_graph: Rc<RefCell<InstanceGraph>>,
+  root_instance_ref: Option<Rc<RefCell<InstanceRefNode>>>,
+  instance_active_stream: Rc<RefCell<Stream<(NodeIndex, bool)>>>,
+  signal_connector_stream: Rc<RefCell<Stream<InstanceConnectorRef>>>,
+}
+
+impl fmt::Debug for OrchestratorData {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(
+      f,
+      "OrchestratorData {{
+  components: {:?}
+  active_instance_ixs: {:?}
+  clock_cycle: {}
+  instance_graph: {:?}
+  root_instance_ref: {:?}
+  instance_active_stream: Rc<RefCell<Stream<(NodeIndex, bool)>>>
+  signal_connector_stream: Rc<RefCell<Stream<InstanceConnectorRef>>
+}}",
+      self.components,
+      self.active_instance_ixs,
+      self.clock_cycle,
+      self.instance_graph,
+      self.root_instance_ref,
+    )
+  }
 }
 
 impl OrchestratorData {
   pub fn new() -> OrchestratorData {
     OrchestratorData {
       components: HashMap::new(),
-      node_instance_refs_to_owner_ids: HashMap::new(),
-      active_instance_ids: HashSet::new(),
+      active_instance_ixs: HashSet::new(),
       clock_cycle: 0,
-      inactivate_ids: Vec::new(),
-      connections: Graph::new(),
-      root_component_name: None,
-      root_instance_id: None,
-      instance_ids_to_instances: HashMap::new(),
+      instance_graph: Rc::new(RefCell::new(StableGraph::new())),
+      root_instance_ref: None,
+      instance_active_stream: Rc::new(RefCell::new(Stream::never())),
+      signal_connector_stream: Rc::new(RefCell::new(Stream::never())),
     }
   }
 
@@ -94,7 +99,11 @@ impl OrchestratorData {
   }
 
   pub fn add_root_component(&mut self, component: Component) -> &mut Self {
-    self.root_component_name = Some(component.name.clone());
+    self.root_instance_ref = Some(Rc::new(RefCell::new(InstanceRefNode {
+      node_name: "Root".to_string(),
+      component_name: component.name.clone(),
+      instance_ix: None,
+    })));
     self.components.insert(component.name.clone(), component);
     self
   }
@@ -114,8 +123,9 @@ impl<'a> Orchestrator<'a> {
     Orchestrator { data }
   }
 
-  pub fn add_component(&mut self, component: Component) {
+  pub fn add_component(&mut self, component: Component) -> &mut Self {
     self.data.add_component(component);
+    self
   }
 
   pub fn add_root_component(&mut self, component: Component) -> &mut Self {
@@ -124,245 +134,256 @@ impl<'a> Orchestrator<'a> {
   }
 
   pub fn run(&mut self) -> &mut Self {
-    self.data.active_instance_ids.clear();
-    for (id, component_instance) in self.data.instance_ids_to_instances.iter() {
-      if component_instance.is_active() {
-        self.data.active_instance_ids.insert(id.clone());
-      }
-    }
-
-    let stepper = Stepper {
-      data: &mut self.data,
-    };
-    for _tmp in stepper {}
-    //while self.step(&mut self.data.active_instance_ids) {}
+    while Orchestrator::step(
+      &mut self.data.active_instance_ixs,
+      &mut self.data.clock_cycle,
+      self.data.instance_graph.clone(),
+      self.data.instance_active_stream.clone(),
+      self.data.signal_connector_stream.clone(),
+    ) {}
 
     self
+  }
+
+  fn get_instance<'b>(
+    instance_ref_node: &'b mut InstanceRefNode,
+    instance_graph: Rc<RefCell<InstanceGraph>>,
+    instance_active_stream: Rc<RefCell<Stream<(NodeIndex, bool)>>>,
+    components: &HashMap<String, Component>,
+  ) -> Rc<RefCell<ComponentInstance>> {
+    let (instance_ix, instance) =
+      get_or_create_instance_graph_node(instance_ref_node, instance_graph.clone());
+
+    // Get or create ComponentInstance
+    match instance {
+      Some(instance) => instance.clone(),
+      None => {
+        // We need to create instance and update InstanceGraph with corresponding nodes and connections
+        let component = components
+          .get(&mut instance_ref_node.component_name)
+          .expect("component not found");
+        let instance = Rc::new(RefCell::new(ComponentInstance::new(
+          instance_ref_node.node_name.to_string(),
+          component,
+          &[],
+        )));
+        let instance_node = InstanceGraphNode {
+          component_name: instance_ref_node.node_name.to_string(),
+          instance: Some(instance),
+        };
+        let instance_ix = instance_graph.borrow_mut().add_node(instance_node);
+        instance_ref_node.instance_ix = Some(instance_ix);
+        let instance = instance_graph.borrow()[instance_ix]
+          .instance
+          .as_ref()
+          .unwrap()
+          .clone();
+
+        {
+          // Create uninstantiated InstanceGraphNodes for each of the instance's InstanceRefNode.
+          // Update the InstanceRefNodes with the index of the InstanceGraphNodes.
+          // Add InstanceConnection edges between the InstanceGraphNodes based on field
+          // instance_connector_name of instance's Connection edges.
+
+          // Satisfy borrow checker with a separate Vec<NodeIndex>
+          let component_ref_node_ixs: Vec<_> = instance
+            .borrow()
+            .component
+            .graph
+            .node_indices()
+            .filter(|ix| match component.graph[*ix] {
+              Node::Component(_) => true,
+              _ => false,
+            })
+            .collect();
+
+          for component_source_ix in component_ref_node_ixs {
+            let mut component_edges = component
+              .graph
+              .neighbors_directed(component_source_ix, Direction::Outgoing)
+              .detach();
+
+            while let Some((component_edge_ix, component_target_ix)) =
+              component_edges.next(&component.graph)
+            {
+              match instance.borrow().component.graph[component_edge_ix] {
+                Edge::Connection(ref child_connection) => {
+                  match (
+                    &mut instance.borrow_mut().component.graph[component_source_ix],
+                    &mut instance.borrow_mut().component.graph[component_target_ix],
+                  ) {
+                    (
+                      Node::ConnectorOut(child_connector_out),
+                      Node::Component(child_instance_ref_node_to),
+                    ) => {
+                      // From child ConnectorOut to new InstanceRefNode
+                      let (child_instance_graph_node_ix_to, child_instance_graph_node_to) =
+                        get_or_create_instance_graph_node(
+                          child_instance_ref_node_to,
+                          instance_graph.clone(),
+                        );
+
+                      let child_instance_graph_node_to =
+                        &instance_graph.borrow()[child_instance_graph_node_ix_to];
+
+                      // Get NodeIndex of named connector in child instance
+                      let child_instance_connector_ix_to = get_connector_index_by_name(
+                        components,
+                        child_instance_graph_node_to.component_name.as_str(),
+                        child_connection.instance_connector_name.clone(),
+                      );
+
+                      child_connector_out.to_instance_connector = Some(InstanceConnectorRef {
+                        instance_ix: child_instance_graph_node_ix_to,
+                        connector_ix: child_instance_connector_ix_to,
+                      });
+                      child_instance_ref_node_to.instance_ix =
+                        Some(child_instance_graph_node_ix_to);
+                      instance_graph.borrow_mut().update_edge(
+                        child_instance_graph_node_ix_to,
+                        instance_ix,
+                        InstanceConnection {
+                          from_connector_index: component_source_ix,
+                          to_connector_index: component_target_ix,
+                        },
+                      );
+                    }
+                    (Node::Component(child_instance_ref_node_from), Node::ConnectorIn(_)) => {
+                      // From new InstanceRefNode to child ConnectorIn
+                      let (child_instance_graph_node_ix, _) = get_or_create_instance_graph_node(
+                        child_instance_ref_node_from,
+                        instance_graph.clone(),
+                      );
+                      child_instance_ref_node_from.instance_ix = Some(child_instance_graph_node_ix);
+                      instance_graph.borrow_mut().update_edge(
+                        child_instance_graph_node_ix,
+                        instance_ix,
+                        InstanceConnection {
+                          from_connector_index: component_source_ix,
+                          to_connector_index: component_target_ix,
+                        },
+                      );
+                    }
+                    _ => {}
+                  }
+                }
+                _ => {
+                  continue;
+                }
+              }
+            }
+          }
+        }
+
+        // Update stream to include events from new instance
+        instance_active_stream.replace_with(|old| {
+          let stream = instance.borrow().active_stream();
+          let instance_graph_index = instance_ref_node.instance_ix.unwrap();
+          old.merge(&stream.map(move |active| (instance_graph_index, active)))
+        });
+        instance
+      }
+    }
   }
 
   fn step(
-    active_instance_ids: &mut HashSet<Rc<str>>,
-    instance_ids_to_instances: &mut HashMap<Rc<str>, ComponentInstance>,
-    inactivate_ids: &mut Vec<Rc<str>>,
+    active_instance_ixs: &mut HashSet<NodeIndex>,
     clock_cycle: &mut usize,
-    connections: &InstanceGraph,
+    instance_graph: Rc<RefCell<InstanceGraph>>,
+    instance_active_stream: Rc<RefCell<Stream<(NodeIndex, bool)>>>,
+    signal_connector_stream: Rc<RefCell<Stream<InstanceConnectorRef>>>,
   ) -> bool {
-    let mut context = Context::new();
-
-    for id in active_instance_ids.iter() {
-      let component_instance = instance_ids_to_instances.get_mut(id).unwrap();
-
-      let is_active = component_instance.step(&mut context);
-
-      if !is_active {
-        inactivate_ids.push(id.clone());
-      }
-    }
-
-    for tmp in context.signal_requests {
-      Orchestrator::signal_connector_out(
-        tmp.node_index,
-        tmp.instance_id,
-        &connections,
-        instance_ids_to_instances,
-      );
-    }
-
-    for id in inactivate_ids.iter() {
-      active_instance_ids.remove(id);
-    }
-    inactivate_ids.clear();
     *clock_cycle += 1;
 
-    active_instance_ids.len() > 0
+    let mut instance_graph = instance_graph.borrow_mut();
+    for ix in active_instance_ixs.iter() {
+      let instance = instance_graph[*ix].instance.as_mut().unwrap();
+      instance.borrow_mut().step();
+    }
+
+    for InstanceConnectorRef {
+      instance_ix,
+      connector_ix,
+    } in signal_connector_stream.borrow().events()
+    {
+      todo!();
+      //Orchestrator::signal_instance_connector(&mut self, instance_ix, connector_ix)
+    }
+
+    for (instance_ix, is_active) in instance_active_stream.borrow().events() {
+      match is_active {
+        true => active_instance_ixs.insert(instance_ix),
+        false => active_instance_ixs.remove(&instance_ix),
+      };
+    }
+
+    active_instance_ixs.len() > 0
   }
 
-  // fn instantiate_component(&mut self, id: &String) -> ComponentInstance {
-  //   let component = self.components[id];
-  //   let mut component_instance = ComponentInstance::new(component);
-  //   component_instance
-  // }
+  /// Sends a signal to given node of root instance
+  pub fn signal_root_instance_connector(&mut self, connector_index: NodeIndex) -> &mut Self {
+    //todo: make an enum for passing in NodeIndex or NodeName(string)
 
-  // fn resolve_connected_instance(
-  //   &'a mut self,
-  //   connector_out: &mut ConnectorOut,
-  //   connector_out_owner_instance_id: Option<Rc<str>>,
-  //   connector_out_index: NodeIndex,
-  // ) -> Option<(Rc<RefCell<ComponentInstance>>, NodeIndex)> {
-  //   match connector_out.to_node_instance_ref {
-  //     Some(ref mut to_node_instance_ref) => match self.resolve_instance(to_node_instance_ref) {
-  //       Some(to_instance_rc) => {
-  //         return Some((to_instance_rc.clone(), to_node_instance_ref.node_index));
-  //       }
-  //       None => {
-  //         todo!(
-  //           "improve error handling: resolve_connected_instance: to_node_instance_ref not found {:?}",
-  //           to_node_instance_ref
-  //         );
-  //       }
-  //     },
-  //     None => {
-  //       // todo: rethink use of graph for managing instances and connections
-  //       /*
-  //       Rc<str> is a unique single hashable value that can allow quick lookup of instances
-  //       If instances are stored in a graph, then NodeIndex can be used to lookup instances, but it would
-  //       not remain stable without using the less performant StableGraph.
+    let root_instance_ref = self
+      .data
+      .root_instance_ref
+      .as_ref()
+      .expect("No root instance")
+      .clone();
 
-  //        */
-  //       // let node_instance_ref = NodeInstanceRef::new(
-  //       //   connector_out_owner_instance_id,
-  //       //   connector_out_index,
-  //       //   connector_out.connector_index,
-  //       // );
-  //       todo!();
-  //     }
-  //   }
-  // }
-
-  // fn resolve_instance(
-  //   &mut self,
-  //   node_instance_ref: &mut NodeInstanceRef,
-  // ) -> Option<&mut ComponentInstance> {
-  //   match &node_instance_ref.instance_id {
-  //     Some(instance_id) => {
-  //       // instance has previously been resolved for this ref
-  //       return Some(self.instance_ids_to_instances.get_mut(instance_id).unwrap());
-  //     }
-  //     None => {
-  //       match self.node_instance_refs_to_owner_ids.get(&node_instance_ref) {
-  //         Some(instance_id) => {
-  //           // instance exists, but has not been resolved for this ref
-  //           let instance = self.instance_ids_to_instances.get_mut(instance_id).unwrap();
-  //           node_instance_ref.instance_id = Some(instance_id.clone());
-  //           return Some(instance);
-  //         }
-  //         None => {
-  //           // instance does not exist, so must be created
-  //           let component = self
-  //             .components
-  //             .get(&node_instance_ref.component_name)
-  //             .unwrap();
-  //           let component_instance = ComponentInstance::new(
-  //             node_instance_ref.node_name.clone(),
-  //             &component,
-  //             &[],
-  //             ExecutionContext::new({
-  //               //
-  //               move |node_index, instance_id| {}
-  //             }),
-  //           );
-  //           let component_instance_id = component_instance.id.clone();
-  //           node_instance_ref.instance_id = Some(component_instance_id.clone());
-  //           self
-  //             .instance_ids_to_instances
-  //             .insert(component_instance.id.clone(), component_instance);
-  //           self
-  //             .node_instance_refs_to_owner_ids
-  //             .insert(node_instance_ref.clone(), component_instance_id.clone());
-  //           return Some(
-  //             self
-  //               .instance_ids_to_instances
-  //               .get_mut(&component_instance_id)
-  //               .unwrap(),
-  //           );
-  //         }
-  //       }
-  //     }
-  //   }
-  // }
-
-  pub fn signal_connector_in(&mut self, node_index: NodeIndex) -> &mut Self {
-    match self.data.root_instance_id {
-      Some(ref root_instance_id) => {
-        let root_instance_id = root_instance_id.clone();
-        self.signal_connector_in_on_instance(root_instance_id, node_index)
-      }
-      None => match self.data.root_component_name {
-        Some(ref root_component_name) => {
-          let root_component = self.data.components.get(root_component_name).unwrap();
-          let root_component_instance =
-            ComponentInstance::new(NodeName("root".to_string()), root_component, &[]);
-          let root_component_instance_id = root_component_instance.id.clone();
-          self.data.root_instance_id = Some(root_component_instance_id.clone());
-          self
-            .data
-            .instance_ids_to_instances
-            .insert(root_component_instance.id.clone(), root_component_instance);
-          self.signal_connector_in_on_instance(root_component_instance_id, node_index)
-        }
-        None => {
-          todo!("Improve error handling: no root component");
-        }
-      },
-    }
+    self.signal_instance_connector(&mut root_instance_ref.borrow_mut(), connector_index);
 
     self
   }
 
-  pub fn signal_connector_in_on_instance(&mut self, instance_id: Rc<str>, node_index: NodeIndex) {
-    let instance = self
-      .data
-      .instance_ids_to_instances
-      .get_mut(&instance_id)
-      .unwrap();
-    instance.signal_connector_in(node_index);
-  }
-
-  fn signal_connector_out(
-    node_index: NodeIndex,
-    from_instance_id: Rc<str>,
-    connections: &InstanceGraph,
-    instance_ids_to_instances: &mut HashMap<Rc<str>, ComponentInstance>,
+  pub fn signal_instance_connector(
+    &mut self,
+    instance_ref: &mut InstanceRefNode,
+    connector_index: NodeIndex,
   ) {
-    if let Some((from_instance_node_index, _)) = connections
-      .node_references()
-      .find(|&(_, id)| id == &from_instance_id)
-    {
-      if let Some(edge) = connections
-        .edges_directed(from_instance_node_index, Direction::Outgoing)
-        .find(|edge| edge.weight().from_connector_index == node_index)
-      {
-        let to_instance_node_index = edge.weight().to_connector_index;
-        let to_instance_id = connections[edge.target()].clone();
-        let instance = instance_ids_to_instances.get_mut(&to_instance_id).unwrap();
-        instance.signal_connector_in(to_instance_node_index);
-      }
-    }
+    let instance = Orchestrator::get_instance(
+      instance_ref,
+      self.data.instance_graph.clone(),
+      self.data.instance_active_stream.clone(),
+      &self.data.components,
+    );
+    instance.borrow_mut().signal_connector_in(connector_index);
   }
 }
 
-pub struct StepStatus {}
-
-pub struct Stepper<'a> {
-  data: &'a mut OrchestratorData,
+fn get_connector_index_by_name(
+  components: &HashMap<String, Component>,
+  component_name: &str,
+  connector_name: Rc<str>,
+) -> NodeIndex {
+  let component = &components[component_name];
+  let connector_ix = component
+    .graph
+    .node_indices()
+    .find(|ix| match &component.graph[*ix] {
+      Node::ConnectorIn(connector_in) => connector_in.node_name.as_str() == connector_name.as_ref(),
+      _ => false,
+    })
+    .expect("ConnectorIn not found");
+  connector_ix
 }
 
-// impl Stepper<'_> {
-//   pub fn new(
-//     orchestrator: &mut Orchestrator,
-//     active_instance_ids: &mut HashSet<Rc<str>>,
-//   ) -> Self {
-//     Self {
-//       orchestrator,
-//       active_instance_ids,
-//     }
-//   }
-//}
-
-impl Iterator for Stepper<'_> {
-  type Item = StepStatus;
-
-  fn next(&mut self) -> Option<Self::Item> {
-    if Orchestrator::step(
-      &mut self.data.active_instance_ids,
-      &mut self.data.instance_ids_to_instances,
-      &mut self.data.inactivate_ids,
-      &mut self.data.clock_cycle,
-      &self.data.connections,
-    ) {
-      Some(StepStatus {})
-    } else {
-      None
+fn get_or_create_instance_graph_node(
+  instance_ref_node: &mut InstanceRefNode,
+  instance_graph: Rc<RefCell<InstanceGraph>>,
+) -> (NodeIndex, Option<Rc<RefCell<ComponentInstance>>>) {
+  match instance_ref_node.instance_ix {
+    Some(instance_ix) => (
+      instance_ix,
+      instance_graph.borrow()[instance_ix].instance.clone(),
+    ),
+    None => {
+      let instance_ix = instance_graph.borrow_mut().add_node(InstanceGraphNode {
+        component_name: instance_ref_node.node_name.to_string(),
+        instance: None,
+      });
+      instance_ref_node.instance_ix = Some(instance_ix);
+      (instance_ix, None)
     }
   }
 }
@@ -382,14 +403,16 @@ mod tests {
   #[traced_test]
   #[test]
   fn it_works<'a>() {
-    let mut component = Component::new(ComponentName("AComponent".to_string()));
+    let mut component = Component::new("AComponent".to_string());
 
-    let connector_in = component.graph.add_node(Node::ConnectorIn(ConnectorIn::new(
-      "connector_in".to_string(),
-    )));
-    let cell_b = component.graph.add_node(Node::Cell(Cell::relay()));
-    let cell_c = component.graph.add_node(Node::Cell(Cell::relay()));
-    let cell_d = component.graph.add_node(Node::Cell(Cell::relay()));
+    let connector_in = component
+      .graph
+      .add_node(Node::ConnectorIn(ConnectorInNode::new(
+        "connector_in".to_string(),
+      )));
+    let cell_b = component.graph.add_node(Node::Cell(CellNode::relay()));
+    let cell_c = component.graph.add_node(Node::Cell(CellNode::relay()));
+    let cell_d = component.graph.add_node(Node::Cell(CellNode::relay()));
     component
       .graph
       .add_edge(connector_in, cell_b, Edge::new_signal(0));
@@ -402,7 +425,70 @@ mod tests {
     let mut orchestrator = Orchestrator::new(&mut data);
     orchestrator
       .add_root_component(component)
-      .signal_connector_in(connector_in)
+      .signal_root_instance_connector(connector_in)
+      .run();
+
+    assert_eq!(orchestrator.data.clock_cycle, 3);
+  }
+
+  #[traced_test]
+  #[test]
+  fn it_works2() {
+    // Component1 is instantiated by and connected from Component2
+    let mut component_1 = Component::new("Component1".to_string());
+    let connector_in_component_1 =
+      component_1
+        .graph
+        .add_node(Node::ConnectorIn(ConnectorInNode::new(
+          "connector_in".to_string(),
+        )));
+    let cell_a_component_1 = component_1.graph.add_node(Node::Cell(CellNode::relay()));
+    component_1.graph.add_edge(
+      connector_in_component_1,
+      cell_a_component_1,
+      Edge::new_signal(0),
+    );
+
+    let mut component_2 = Component::new("Component2".to_string());
+    let connector_in_component_2 =
+      component_2
+        .graph
+        .add_node(Node::ConnectorIn(ConnectorInNode::new(
+          "connector_in".to_string(),
+        )));
+    let cell_a_component_2 = component_2.graph.add_node(Node::Cell(CellNode::relay()));
+    let connector_out_component_2 = component_2
+      .graph
+      .add_node(Node::ConnectorOut(ConnectorOutNode::new()));
+    let instance_component_1 = component_2
+      .graph
+      .add_node(Node::Component(InstanceRefNode::new(
+        "component_1".to_string(),
+        "Component1".to_string(),
+      )));
+
+    component_2.graph.add_edge(
+      connector_in_component_2,
+      cell_a_component_2,
+      Edge::new_signal(0),
+    );
+    component_2.graph.add_edge(
+      cell_a_component_2,
+      connector_out_component_2,
+      Edge::new_signal(0),
+    );
+    component_2.graph.add_edge(
+      connector_out_component_2,
+      instance_component_1,
+      Edge::Connection(Connection::new("connector_in".to_string())),
+    );
+
+    let mut data = OrchestratorData::new();
+    let mut orchestrator = Orchestrator::new(&mut data);
+    orchestrator
+      .add_root_component(component_2)
+      .add_component(component_1)
+      .signal_root_instance_connector(connector_in_component_2)
       .run();
 
     assert_eq!(orchestrator.data.clock_cycle, 3);

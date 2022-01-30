@@ -1,31 +1,62 @@
+use std::fmt;
 use std::rc::Rc;
 
 use crate::component::*;
-use crate::orchestrator::Context;
+use crate::orchestrator::InstanceConnectorRef;
 
+use carboxyl::{Sink, Stream};
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
 
-#[derive(Debug)]
 pub struct ComponentInstance {
   pub id: Rc<str>,
-  pub node_name: NodeName,
-  component: Component,
+  pub node_name: String,
+  pub(crate) component: Component,
   fired_nodes: Vec<NodeIndex>,
   active_nodes: Vec<NodeIndex>,
   staged_nodes: Vec<NodeIndex>,
   incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
+  active_sink: Sink<bool>,
+  signal_connector_sink: Sink<InstanceConnectorRef>,
+}
+
+impl fmt::Debug for ComponentInstance {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(
+      f,
+      "ComponentInstance {{
+  id: {}
+  node_name: {}
+  component: {:?}
+  fired_nodes: {:?}
+  active_nodes: {:?}
+  staged_nodes: {:?}
+  incoming_signals: {:?}
+  instance_cycle: {}
+  active_sink: Sink<bool>
+  signal_connector_sink: Sink<SignalRequest>
+}}",
+      self.id,
+      self.node_name,
+      self.component,
+      self.fired_nodes,
+      self.active_nodes,
+      self.staged_nodes,
+      self.incoming_signals,
+      self.instance_cycle,
+    )
+  }
 }
 
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
 // rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
-// It will also help identify boundaries for splitting processing across multiple threads.
+// It will also help identify boundaries for splitting processing across mulcuidtiple threads.
 
 impl ComponentInstance {
   pub fn new(
-    node_name: NodeName,
+    node_name: String,
     component: &Component,
     init_cells: &[NodeIndex],
   ) -> ComponentInstance {
@@ -39,6 +70,8 @@ impl ComponentInstance {
       staged_nodes: init_cells.to_vec(),
       incoming_signals: vec![],
       instance_cycle: 0,
+      active_sink: Sink::new(),
+      signal_connector_sink: Sink::new(),
     }
   }
 
@@ -46,20 +79,33 @@ impl ComponentInstance {
     self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0 || self.incoming_signals.len() > 0
   }
 
-  pub fn run(&mut self, context: &mut Context) {
-    while self.step(context) {}
+  pub fn active_stream(&self) -> Stream<bool> {
+    self.active_sink.stream()
   }
 
-  pub fn step(&mut self, context: &mut Context) -> bool {
+  pub fn signal_connector_stream(&self) -> Stream<InstanceConnectorRef> {
+    self.signal_connector_sink.stream()
+  }
+
+  pub fn run(&mut self) {
+    while self.step() {}
+  }
+
+  pub fn step(&mut self) -> bool {
+    let is_active_start = self.is_active();
     self.propagate_fired_signals();
-    self.stage_signaled_and_associated_nodes(context);
+    self.stage_signaled_and_associated_nodes();
     if self.staged_nodes.len() > 0 {
       std::mem::swap(&mut self.active_nodes, &mut self.staged_nodes);
       self.staged_nodes.clear();
       self.process_active_nodes();
     }
     self.instance_cycle += 1;
-    return self.fired_nodes.len() > 0;
+    let is_active_end = self.is_active();
+    if is_active_start != is_active_end {
+      self.active_sink.send(is_active_end);
+    }
+    is_active_end
   }
 
   fn propagate_fired_signals(&mut self) {
@@ -84,7 +130,7 @@ impl ComponentInstance {
     }
   }
 
-  fn stage_signaled_and_associated_nodes(&mut self, context: &mut Context) {
+  fn stage_signaled_and_associated_nodes(&mut self) {
     // Stage connected cells that are not already staged
     let graph = &mut self.component.graph;
     for node_index in self.fired_nodes.iter() {
@@ -102,8 +148,10 @@ impl ComponentInstance {
                 cell.flags.insert(CellFlags::STAGED);
               }
             }
-            Node::ConnectorOut(_) => {
-              context.signal_connector_out(target_index, self.id.clone());
+            Node::ConnectorOut(con) => {
+              if let Some(ref instance_con_ref) = con.to_instance_connector {
+                self.signal_connector_sink.send(instance_con_ref.clone());
+              }
             }
             _ => {
               unimplemented!();
@@ -176,7 +224,11 @@ impl ComponentInstance {
   }
 
   pub fn signal_connector_in(&mut self, node_index: NodeIndex) {
+    let was_inactive = !self.is_active();
     self.incoming_signals.push(node_index);
+    if was_inactive {
+      self.active_sink.send(true);
+    }
   }
 }
 
@@ -184,19 +236,19 @@ impl ComponentInstance {
 mod tests {
   use crate::component::*;
   use crate::component_instance::ComponentInstance;
-  use crate::orchestrator::{Context, OrchestratorData};
+  use crate::orchestrator::OrchestratorData;
 
   use tracing_test::traced_test;
 
   #[traced_test]
   #[test]
   fn it_works() {
-    let mut component = Component::new(ComponentName("AComponent".to_string()));
+    let mut component = Component::new("AComponent".to_string());
 
-    let cell_a = component.graph.add_node(Node::Cell(Cell::one_shot()));
-    let cell_b = component.graph.add_node(Node::Cell(Cell::relay()));
-    let cell_c = component.graph.add_node(Node::Cell(Cell::relay()));
-    let cell_d = component.graph.add_node(Node::Cell(Cell::relay()));
+    let cell_a = component.graph.add_node(Node::Cell(CellNode::one_shot()));
+    let cell_b = component.graph.add_node(Node::Cell(CellNode::relay()));
+    let cell_c = component.graph.add_node(Node::Cell(CellNode::relay()));
+    let cell_d = component.graph.add_node(Node::Cell(CellNode::relay()));
     component
       .graph
       .add_edge(cell_a, cell_b, Edge::Signal(Signal { signal_bit: 0 }));
@@ -206,16 +258,13 @@ mod tests {
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
 
-    let mut instance =
-      ComponentInstance::new(NodeName("root_node".to_string()), &component, &init_cells);
+    let mut instance = ComponentInstance::new("root_node".to_string(), &component, &init_cells);
 
     let mut data = OrchestratorData::new();
 
     data.add_root_component(component);
 
-    let mut context = Context::new();
-
-    instance.run(&mut context);
+    instance.run();
 
     assert_eq!(instance.instance_cycle, 4);
   }
