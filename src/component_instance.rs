@@ -2,9 +2,8 @@ use std::fmt;
 use std::rc::Rc;
 
 use crate::component::*;
-use crate::orchestrator::InstanceConnectorRef;
+use crate::orchestrator::ExecutionContext;
 
-use carboxyl::{Sink, Stream};
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
@@ -18,8 +17,6 @@ pub struct ComponentInstance {
   staged_nodes: Vec<NodeIndex>,
   incoming_signals: Vec<NodeIndex>,
   instance_cycle: usize,
-  active_sink: Sink<bool>,
-  signal_connector_sink: Sink<InstanceConnectorRef>,
 }
 
 impl fmt::Debug for ComponentInstance {
@@ -35,7 +32,6 @@ impl fmt::Debug for ComponentInstance {
   staged_nodes: {:?}
   incoming_signals: {:?}
   instance_cycle: {}
-  active_sink: Sink<bool>
   signal_connector_sink: Sink<SignalRequest>
 }}",
       self.id,
@@ -70,8 +66,6 @@ impl ComponentInstance {
       staged_nodes: init_cells.to_vec(),
       incoming_signals: vec![],
       instance_cycle: 0,
-      active_sink: Sink::new(),
-      signal_connector_sink: Sink::new(),
     }
   }
 
@@ -79,33 +73,16 @@ impl ComponentInstance {
     self.staged_nodes.len() > 0 || self.fired_nodes.len() > 0 || self.incoming_signals.len() > 0
   }
 
-  pub fn active_stream(&self) -> Stream<bool> {
-    self.active_sink.stream()
-  }
-
-  pub fn signal_connector_stream(&self) -> Stream<InstanceConnectorRef> {
-    self.signal_connector_sink.stream()
-  }
-
-  pub fn run(&mut self) {
-    while self.step() {}
-  }
-
-  pub fn step(&mut self) -> bool {
-    let is_active_start = self.is_active();
+  pub(crate) fn step(&mut self, context: &mut ExecutionContext) -> bool {
     self.propagate_fired_signals();
-    self.stage_signaled_and_associated_nodes();
+    self.stage_signaled_and_associated_nodes(context);
     if self.staged_nodes.len() > 0 {
       std::mem::swap(&mut self.active_nodes, &mut self.staged_nodes);
       self.staged_nodes.clear();
       self.process_active_nodes();
     }
     self.instance_cycle += 1;
-    let is_active_end = self.is_active();
-    if is_active_start != is_active_end {
-      self.active_sink.send(is_active_end);
-    }
-    is_active_end
+    self.is_active()
   }
 
   fn propagate_fired_signals(&mut self) {
@@ -130,7 +107,7 @@ impl ComponentInstance {
     }
   }
 
-  fn stage_signaled_and_associated_nodes(&mut self) {
+  fn stage_signaled_and_associated_nodes(&mut self, context: &mut ExecutionContext) {
     // Stage connected cells that are not already staged
     let graph = &mut self.component.graph;
     for node_index in self.fired_nodes.iter() {
@@ -149,8 +126,8 @@ impl ComponentInstance {
               }
             }
             Node::ConnectorOut(con) => {
-              if let Some(ref instance_con_ref) = con.to_instance_connector {
-                self.signal_connector_sink.send(instance_con_ref.clone());
+              if let Some(ref instance_con_ix) = con.to_instance_connector {
+                context.signal_connector(instance_con_ix.clone());
               }
             }
             _ => {
@@ -224,11 +201,7 @@ impl ComponentInstance {
   }
 
   pub fn signal_connector_in(&mut self, node_index: NodeIndex) {
-    let was_inactive = !self.is_active();
     self.incoming_signals.push(node_index);
-    if was_inactive {
-      self.active_sink.send(true);
-    }
   }
 }
 
@@ -236,7 +209,7 @@ impl ComponentInstance {
 mod tests {
   use crate::component::*;
   use crate::component_instance::ComponentInstance;
-  use crate::orchestrator::OrchestratorData;
+  use crate::orchestrator::{ExecutionContext, OrchestratorData};
 
   use tracing_test::traced_test;
 
@@ -264,7 +237,9 @@ mod tests {
 
     data.add_root_component(component);
 
-    instance.run();
+    let mut context = ExecutionContext::new();
+
+    while instance.step(&mut context) {}
 
     assert_eq!(instance.instance_cycle, 4);
   }

@@ -7,7 +7,6 @@ use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
 
 use crate::component_instance::ComponentInstance;
-use crate::orchestrator::InstanceConnectorRef;
 
 // TODO: may be time to use differing structures for components and component_instances
 // since components are more about design-time considerations and component_instances runtime
@@ -60,6 +59,12 @@ impl Hash for InstanceRefNode {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InstanceConnectorIx {
+  pub instance_ix: NodeIndex,
+  pub connector_ix: NodeIndex,
+}
+
 #[derive(Debug)]
 pub struct InstanceGraphNode {
   pub component_name: String,
@@ -95,7 +100,7 @@ impl ConnectorInNode {
 
 #[derive(Debug, Clone)]
 pub struct ConnectorOutNode {
-  pub to_instance_connector: Option<InstanceConnectorRef>,
+  pub to_instance_connector: Option<InstanceConnectorIx>,
 }
 
 impl ConnectorOutNode {
