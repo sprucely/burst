@@ -1,11 +1,12 @@
+use petgraph::graph::EdgeIndex;
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableGraph;
-use petgraph::Direction;
 
 use crate::component::*;
 use crate::component_instance::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::IndexMut;
 use std::rc::Rc;
 
 // TODO: Add threadpool concurrency via rayon crate (https://docs.rs/rayon/)
@@ -18,13 +19,6 @@ use std::rc::Rc;
 /// connector connection connector
 /// ------<in to----from out<-----
 /// ----->out from----to in>------
-
-// #[derive(Debug, Clone, PartialEq, Hash)]
-// struct Connection {
-//   pub owning_instance_ref: ComponentInstanceRef,
-//   pub from_connector_ref: NodeRef,
-//   pub to_connector_ref: NodeRef,
-// }
 
 pub type InstanceGraph = StableGraph<InstanceGraphNode, InstanceConnection>;
 
@@ -62,11 +56,13 @@ impl ExecutionContext {
 
   fn end_cycle(&mut self) -> bool {
     self.active_instance_ixs.clear();
+    self.signaled_connector_ixs.clear();
     self.queued_instance_ixs.len() > 0
   }
 
   pub(crate) fn signal_connector(&mut self, instance_con_ix: InstanceConnectorIx) {
     self.signaled_connector_ixs.push(instance_con_ix);
+    self.queued_instance_ixs.push(instance_con_ix.instance_ix);
   }
 }
 
@@ -123,10 +119,6 @@ pub struct Orchestrator<'a> {
 }
 
 impl<'a> Orchestrator<'a> {
-  // pub fn new(orchestrator_data: &'a mut OrchestratorData) -> Self {
-  //   orchestrator_data.as_orchestrator()
-  // }
-
   pub fn new(data: &'a mut OrchestratorData) -> Self {
     Orchestrator { data }
   }
@@ -178,13 +170,10 @@ impl<'a> Orchestrator<'a> {
 
         if let Some(instance_ref_node) = instance_ref_node {
           // Put new instance into instance_ref_node
-          let instance_node = InstanceGraphNode {
-            component_name: component_name,
-            instance: Some(instance.clone()),
-          };
-          let instance_ix = instance_graph.borrow_mut().add_node(instance_node);
           instance_ref_node.instance_ix = Some(instance_ix);
         }
+
+        instance_graph.borrow_mut()[instance_ix].instance = Some(instance.clone());
 
         {
           // Create uninstantiated InstanceGraphNodes for each of the instance's InstanceRefNode.
@@ -204,85 +193,95 @@ impl<'a> Orchestrator<'a> {
             })
             .collect();
 
-          for component_source_ix in component_ref_node_ixs {
+          for component_ref_node_ix in component_ref_node_ixs {
             let mut component_edges = component
               .graph
-              .neighbors_directed(component_source_ix, Direction::Outgoing)
+              .neighbors_undirected(component_ref_node_ix)
               .detach();
 
             while let Some((component_edge_ix, component_target_ix)) =
               component_edges.next(&component.graph)
             {
-              match instance.borrow().component.graph[component_edge_ix] {
-                Edge::Connection(ref child_connection) => {
-                  match (
-                    &mut instance.borrow_mut().component.graph[component_source_ix],
-                    &mut instance.borrow_mut().component.graph[component_target_ix],
-                  ) {
-                    (
-                      Node::ConnectorOut(child_connector_out),
-                      Node::Component(child_instance_ref_node_to),
-                    ) => {
-                      // From child ConnectorOut to new InstanceRefNode
-                      let mut instance_ref =
-                        InstanceRef::InstanceRefNode(child_instance_ref_node_to);
-                      let (child_instance_graph_node_ix_to, _, _) =
-                        get_or_create_instance_graph_node(
-                          &mut instance_ref,
-                          instance_graph.clone(),
-                        );
+              let connected_nodes = unsafe {
+                // It's safe to assume these three mutable references don't alias
+                let graph = &mut instance.borrow_mut().component.graph as *mut _;
+                (
+                  <ComponentGraph as IndexMut<NodeIndex>>::index_mut(
+                    &mut *graph,
+                    component_ref_node_ix,
+                  ),
+                  <ComponentGraph as IndexMut<EdgeIndex>>::index_mut(
+                    &mut *graph,
+                    component_edge_ix,
+                  ),
+                  <ComponentGraph as IndexMut<NodeIndex>>::index_mut(
+                    &mut *graph,
+                    component_target_ix,
+                  ),
+                )
+              };
+              match connected_nodes {
+                (
+                  Node::Component(ref mut child_instance_ref_node_to),
+                  Edge::Connection(ref child_connection),
+                  Node::ConnectorOut(ref mut child_connector_out),
+                ) => {
+                  // From child ConnectorOut to new InstanceRefNode
+                  let mut instance_ref = InstanceRef::InstanceRefNode(child_instance_ref_node_to);
+                  let (child_instance_graph_node_ix_to, _, _) =
+                    get_or_create_instance_graph_node(&mut instance_ref, instance_graph.clone());
 
-                      let child_instance_connector_ix_to: NodeIndex;
-                      {
-                        let instance_graph = instance_graph.borrow();
-                        let child_component_name = instance_graph[child_instance_graph_node_ix_to]
-                          .component_name
-                          .as_str();
+                  let child_instance_connector_ix_to: NodeIndex;
+                  {
+                    let instance_graph = instance_graph.borrow();
+                    let child_component_name = instance_graph[child_instance_graph_node_ix_to]
+                      .component_name
+                      .as_str();
 
-                        // Get NodeIndex of named connector in child instance
-                        child_instance_connector_ix_to = get_connector_index_by_name(
-                          components,
-                          child_component_name,
-                          child_connection.instance_connector_name.clone(),
-                        );
+                    // Get NodeIndex of named connector in child instance
+                    child_instance_connector_ix_to = get_connector_index_by_name(
+                      components,
+                      child_component_name,
+                      child_connection.instance_connector_name.clone(),
+                    );
 
-                        child_connector_out.to_instance_connector = Some(InstanceConnectorIx {
-                          instance_ix: child_instance_graph_node_ix_to,
-                          connector_ix: child_instance_connector_ix_to,
-                        });
-                      }
-                      child_instance_ref_node_to.instance_ix =
-                        Some(child_instance_graph_node_ix_to);
-                      instance_graph.borrow_mut().update_edge(
-                        child_instance_graph_node_ix_to,
-                        instance_ix,
-                        InstanceConnection {
-                          from_connector_index: component_source_ix,
-                          to_connector_index: component_target_ix,
-                        },
-                      );
-                    }
-                    (Node::Component(child_instance_ref_node_from), Node::ConnectorIn(_)) => {
-                      // From new InstanceRefNode to child ConnectorIn
-                      let (child_instance_graph_node_ix, _, _) = get_or_create_instance_graph_node(
-                        &mut InstanceRef::InstanceRefNode(child_instance_ref_node_from),
-                        instance_graph.clone(),
-                      );
-                      child_instance_ref_node_from.instance_ix = Some(child_instance_graph_node_ix);
-                      instance_graph.borrow_mut().update_edge(
-                        child_instance_graph_node_ix,
-                        instance_ix,
-                        InstanceConnection {
-                          from_connector_index: component_source_ix,
-                          to_connector_index: component_target_ix,
-                        },
-                      );
-                    }
-                    _ => {}
+                    child_connector_out.to_instance_connector = Some(InstanceConnectorIx {
+                      instance_ix: child_instance_graph_node_ix_to,
+                      connector_ix: child_instance_connector_ix_to,
+                    });
                   }
+                  child_instance_ref_node_to.instance_ix = Some(child_instance_graph_node_ix_to);
+                  instance_graph.borrow_mut().update_edge(
+                    child_instance_graph_node_ix_to,
+                    instance_ix,
+                    InstanceConnection {
+                      from_connector_index: component_ref_node_ix,
+                      to_connector_index: component_target_ix,
+                    },
+                  );
                 }
-                _ => {
-                  continue;
+                (
+                  Node::Component(ref mut child_instance_ref_node_from),
+                  Edge::Connection(_),
+                  Node::ConnectorIn(_),
+                ) => {
+                  // From new InstanceRefNode to child ConnectorIn
+                  let (child_instance_graph_node_ix, _, _) = get_or_create_instance_graph_node(
+                    &mut InstanceRef::InstanceRefNode(child_instance_ref_node_from),
+                    instance_graph.clone(),
+                  );
+                  child_instance_ref_node_from.instance_ix = Some(child_instance_graph_node_ix);
+                  instance_graph.borrow_mut().update_edge(
+                    child_instance_graph_node_ix,
+                    instance_ix,
+                    InstanceConnection {
+                      from_connector_index: component_ref_node_ix,
+                      to_connector_index: component_target_ix,
+                    },
+                  );
+                }
+                something_else => {
+                  panic!("Unexpected node type: {:?}", something_else);
                 }
               }
             }
@@ -456,6 +455,8 @@ pub enum SignalConnectorOptions {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use petgraph::dot::Dot;
+  use tracing::trace;
   use tracing_test::traced_test;
 
   #[traced_test]
@@ -541,6 +542,11 @@ mod tests {
       Edge::Connection(Connection::new("connector_in".to_string())),
     );
 
+    trace!(
+      "{:?}",
+      Dot::new(&component_2.graph) //, &[Config::EdgeNoLabel])
+    );
+
     let mut data = OrchestratorData::new();
     let mut orchestrator = Orchestrator::new(&mut data);
     orchestrator
@@ -549,6 +555,6 @@ mod tests {
       .signal_root_instance_connector_in(connector_in_component_2)
       .run();
 
-    assert_eq!(orchestrator.data.clock_cycle, 3);
+    assert_eq!(orchestrator.data.clock_cycle, 4);
   }
 }

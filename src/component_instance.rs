@@ -98,10 +98,14 @@ impl ComponentInstance {
         let synapse = &mut graph[edge_index];
         if let Edge::Signal(signal) = synapse {
           let bit = signal.signal_bit;
-          if let Node::Cell(cell) = &mut graph[target_index] {
-            cell.set_signal(bit);
+          match &mut graph[target_index] {
+            Node::Cell(cell) => {
+              cell.set_signal(bit);
+            }
+            _ => {
+              // no other node types should have signals
+            }
           }
-          // no other node types should have signals
         }
       }
     }
@@ -116,11 +120,11 @@ impl ComponentInstance {
         .neighbors_directed(*node_index, Direction::Outgoing)
         .detach();
       while let Some((edge, target_index)) = edges.next(&graph) {
-        if let Edge::Signal(Signal { signal_bit: _ }) = &mut graph[edge] {
-          match &mut graph[target_index] {
+        match &mut graph[edge] {
+          Edge::Signal(Signal { signal_bit: _ }) => match &mut graph[target_index] {
             Node::Cell(cell) => {
               if !cell.flags.contains(CellFlags::STAGED) {
-                trace!("staging {:?}", target_index);
+                trace!("staging cell {:?}", target_index);
                 self.staged_nodes.push(target_index);
                 cell.flags.insert(CellFlags::STAGED);
               }
@@ -131,9 +135,13 @@ impl ComponentInstance {
               }
             }
             _ => {
-              unimplemented!();
+              panic!("Invalid signal receiver node {:?}", target_index);
             }
+          },
+          Edge::Connection(_) => {
+            panic!("Invalid signal receiver node {:?}", target_index);
           }
+          _ => {}
         }
       }
 
@@ -177,6 +185,7 @@ impl ComponentInstance {
     for node_index in self.active_nodes.iter() {
       match &mut graph[*node_index] {
         Node::Cell(cell) => {
+          cell.flags.remove(CellFlags::STAGED);
           match cell.cell_type {
             CellType::Relay | CellType::OneShot => {
               cell.flags.insert(CellFlags::FIRED);
@@ -188,10 +197,6 @@ impl ComponentInstance {
           // reset cell signals for next run
           // TODO: special handling for sequence detection cells which need to hold signals across multiple cycles
           cell.signals = 0;
-        }
-        Node::ConnectorIn(connector) => {
-          connector.flags.insert(CellFlags::FIRED);
-          self.fired_nodes.push(*node_index);
         }
         _ => {
           unimplemented!("No other node types should be active");

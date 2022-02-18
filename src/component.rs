@@ -225,13 +225,6 @@ mod tests {
   use super::*;
 
   #[test]
-  fn it_works2() {
-    let node_name = "test".to_string();
-
-    assert_eq!(node_name.to_string(), "test");
-  }
-
-  #[test]
   fn it_works() {
     let mut component = Component::new("AComponent".to_string());
 
