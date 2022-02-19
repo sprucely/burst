@@ -3,7 +3,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableGraph;
 
 use crate::component::*;
-use crate::component_instance::*;
+use crate::instance::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::IndexMut;

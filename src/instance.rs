@@ -186,7 +186,7 @@ impl ComponentInstance {
 #[cfg(test)]
 mod tests {
   use crate::component::*;
-  use crate::component_instance::ComponentInstance;
+  use crate::instance::ComponentInstance;
   use crate::orchestrator::ExecutionContext;
 
   use tracing_test::traced_test;

@@ -6,10 +6,10 @@ use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
 
-use crate::component_instance::ComponentInstance;
+use crate::instance::ComponentInstance;
 
-// TODO: may be time to use differing structures for components and component_instances
-// since components are more about design-time considerations and component_instances runtime
+// TODO: may be time to use differing structures for components and instances
+// since components are more about design-time considerations and instances runtime
 
 bitflags! {
   #[derive(Default)]

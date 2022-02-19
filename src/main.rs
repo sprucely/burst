@@ -6,7 +6,7 @@ extern crate lalrpop_util;
 lalrpop_mod!(pub grammar); // synthesized by LALRPOP
 
 mod component;
-mod component_instance;
+mod instance;
 mod orchestrator;
 // mod data;
 // mod ops;
