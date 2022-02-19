@@ -8,7 +8,7 @@ use petgraph::Direction;
 use tracing::trace;
 
 #[derive(Debug)]
-pub struct ComponentInstance {
+pub struct Instance {
   pub id: Rc<str>,
   pub node_name: String,
   pub(crate) component: Component,
@@ -19,18 +19,14 @@ pub struct ComponentInstance {
   instance_cycle: usize,
 }
 
-// ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
+// Instance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
 // rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
 // It will also help identify boundaries for splitting processing across multiple threads.
 
-impl ComponentInstance {
-  pub fn new(
-    node_name: String,
-    component: &Component,
-    init_cells: &[NodeIndex],
-  ) -> ComponentInstance {
-    trace!("ComponentInstance::new");
-    ComponentInstance {
+impl Instance {
+  pub fn new(node_name: String, component: &Component, init_cells: &[NodeIndex]) -> Instance {
+    trace!("Instance::new");
+    Instance {
       id: Rc::from(cuid::cuid().unwrap()),
       node_name,
       component: component.clone(),
@@ -186,7 +182,7 @@ impl ComponentInstance {
 #[cfg(test)]
 mod tests {
   use crate::component::*;
-  use crate::instance::ComponentInstance;
+  use crate::instance::Instance;
   use crate::orchestrator::ExecutionContext;
 
   use tracing_test::traced_test;
@@ -209,7 +205,7 @@ mod tests {
       .add_edge(cell_b, cell_d, Edge::Signal(Signal { signal_bit: 0 }));
     let init_cells = [cell_a];
 
-    let mut instance = ComponentInstance::new("root_node".to_string(), &component, &init_cells);
+    let mut instance = Instance::new("root_node".to_string(), &component, &init_cells);
 
     let mut context = ExecutionContext::new();
 

@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use petgraph::graph::Graph;
 use petgraph::graph::NodeIndex;
 
-use crate::instance::ComponentInstance;
+use crate::instance::Instance;
 
 // TODO: may be time to use differing structures for components and instances
 // since components are more about design-time considerations and instances runtime
@@ -68,7 +68,7 @@ pub struct InstanceComponentIx {
 #[derive(Debug)]
 pub struct InstanceGraphNode {
   pub component_name: String,
-  pub instance: Option<Rc<RefCell<ComponentInstance>>>,
+  pub instance: Option<Rc<RefCell<Instance>>>,
 }
 
 impl Hash for InstanceGraphNode {

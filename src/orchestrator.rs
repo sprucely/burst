@@ -124,11 +124,11 @@ impl Orchestrator {
     instance_ref: &'b mut InstanceRef,
     instance_graph: Rc<RefCell<InstanceGraph>>,
     components: &HashMap<String, Component>,
-  ) -> Rc<RefCell<ComponentInstance>> {
+  ) -> Rc<RefCell<Instance>> {
     let (instance_ix, instance, instance_ref_node) =
       get_or_create_instance_graph_node(instance_ref, instance_graph.clone());
 
-    // Get or create ComponentInstance
+    // Get or create Instance
     match instance {
       Some(instance) => instance.clone(),
       None => {
@@ -138,7 +138,7 @@ impl Orchestrator {
         let component = components
           .get::<str>(component_name.as_ref())
           .expect("component not found");
-        let instance = Rc::new(RefCell::new(ComponentInstance::new(
+        let instance = Rc::new(RefCell::new(Instance::new(
           component_name.clone(),
           component,
           &[],
@@ -383,7 +383,7 @@ fn get_or_create_instance_graph_node<'a>(
   instance_graph: Rc<RefCell<InstanceGraph>>,
 ) -> (
   NodeIndex,
-  Option<Rc<RefCell<ComponentInstance>>>,
+  Option<Rc<RefCell<Instance>>>,
   Option<&'a mut InstanceRefNode>,
 ) {
   match instance_ref {
