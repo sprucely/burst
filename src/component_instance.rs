@@ -187,7 +187,7 @@ impl ComponentInstance {
 mod tests {
   use crate::component::*;
   use crate::component_instance::ComponentInstance;
-  use crate::orchestrator::{ExecutionContext, OrchestratorData};
+  use crate::orchestrator::ExecutionContext;
 
   use tracing_test::traced_test;
 
@@ -210,10 +210,6 @@ mod tests {
     let init_cells = [cell_a];
 
     let mut instance = ComponentInstance::new("root_node".to_string(), &component, &init_cells);
-
-    let mut data = OrchestratorData::new();
-
-    data.add_root_component(component);
 
     let mut context = ExecutionContext::new();
 

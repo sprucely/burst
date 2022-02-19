@@ -16,10 +16,6 @@ use std::rc::Rc;
 // summary of error handling at https://www.reddit.com/r/rust/comments/gqe57x/what_are_you_using_for_error_handling/
 // anyhow for applications, thiserror for libraries (thiserror helps to not expose internal error handling to users)
 
-/// connector connection connector
-/// ------<in to----from out<-----
-/// ----->out from----to in>------
-
 pub type InstanceGraph = StableGraph<InstanceGraphNode, InstanceConnection>;
 
 #[derive(Debug, Clone)]
@@ -32,7 +28,7 @@ pub struct InstanceConnection {
 pub(crate) struct ExecutionContext {
   active_instance_ixs: Vec<NodeIndex>,
   queued_instance_ixs: Vec<NodeIndex>,
-  signaled_connector_ixs: Vec<InstanceConnectorIx>,
+  signaled_connector_ixs: Vec<InstanceComponentIx>,
 }
 
 impl ExecutionContext {
@@ -60,14 +56,24 @@ impl ExecutionContext {
     self.queued_instance_ixs.len() > 0
   }
 
-  pub(crate) fn signal_connector(&mut self, instance_con_ix: InstanceConnectorIx) {
+  pub(crate) fn signal_connector(&mut self, instance_con_ix: InstanceComponentIx) {
     self.signaled_connector_ixs.push(instance_con_ix);
     self.queued_instance_ixs.push(instance_con_ix.instance_ix);
   }
 }
 
+enum InstanceRef<'a> {
+  InstanceRefNode(&'a mut InstanceRefNode),
+  InstanceConnectorIx(InstanceComponentIx),
+}
+
+pub enum InstanceConnectorRef<'a> {
+  InstanceRefNode(&'a mut InstanceRefNode, NodeIndex),
+  InstanceConnectorIx(InstanceComponentIx),
+}
+
 #[derive(Debug)]
-pub struct OrchestratorData {
+pub struct Orchestrator {
   components: HashMap<String, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
   clock_cycle: usize,
@@ -77,9 +83,9 @@ pub struct OrchestratorData {
   context: ExecutionContext,
 }
 
-impl OrchestratorData {
-  pub fn new() -> OrchestratorData {
-    OrchestratorData {
+impl Orchestrator {
+  pub fn new() -> Self {
+    Orchestrator {
       components: HashMap::new(),
       clock_cycle: 0,
       instance_graph: Rc::new(RefCell::new(StableGraph::new())),
@@ -88,8 +94,9 @@ impl OrchestratorData {
     }
   }
 
-  pub fn add_component(&mut self, component: Component) {
+  pub fn add_component(&mut self, component: Component) -> &mut Self {
     self.components.insert(component.name.clone(), component);
+    self
   }
 
   pub fn add_root_component(&mut self, component: Component) -> &mut Self {
@@ -101,44 +108,13 @@ impl OrchestratorData {
     self.components.insert(component.name.clone(), component);
     self
   }
-}
-
-enum InstanceRef<'a> {
-  InstanceRefNode(&'a mut InstanceRefNode),
-  InstanceConnectorIx(InstanceConnectorIx),
-}
-
-pub enum InstanceConnectorRef<'a> {
-  InstanceRefNode(&'a mut InstanceRefNode, NodeIndex),
-  InstanceConnectorIx(InstanceConnectorIx),
-}
-
-#[derive(Debug)]
-pub struct Orchestrator<'a> {
-  data: &'a mut OrchestratorData,
-}
-
-impl<'a> Orchestrator<'a> {
-  pub fn new(data: &'a mut OrchestratorData) -> Self {
-    Orchestrator { data }
-  }
-
-  pub fn add_component(&mut self, component: Component) -> &mut Self {
-    self.data.add_component(component);
-    self
-  }
-
-  pub fn add_root_component(&mut self, component: Component) -> &mut Self {
-    self.data.add_root_component(component);
-    self
-  }
 
   pub fn run(&mut self) -> &mut Self {
     while Self::step(
-      &mut self.data.context,
-      &mut self.data.clock_cycle,
-      self.data.instance_graph.clone(),
-      &self.data.components,
+      &mut self.context,
+      &mut self.clock_cycle,
+      self.instance_graph.clone(),
+      &self.components,
     ) {}
 
     self
@@ -245,9 +221,9 @@ impl<'a> Orchestrator<'a> {
                       child_connection.instance_connector_name.clone(),
                     );
 
-                    child_connector_out.to_instance_connector = Some(InstanceConnectorIx {
+                    child_connector_out.to_instance_connector = Some(InstanceComponentIx {
                       instance_ix: child_instance_graph_node_ix_to,
-                      connector_ix: child_instance_connector_ix_to,
+                      component_ix: child_instance_connector_ix_to,
                     });
                   }
                   child_instance_ref_node_to.instance_ix = Some(child_instance_graph_node_ix_to);
@@ -321,7 +297,7 @@ impl<'a> Orchestrator<'a> {
 
       instance
         .borrow_mut()
-        .signal_connector_in(instance_connector_ix.connector_ix);
+        .signal_connector_in(instance_connector_ix.component_ix);
 
       context
         .queued_instance_ixs
@@ -336,7 +312,6 @@ impl<'a> Orchestrator<'a> {
     //todo: make an enum for passing in NodeIndex or NodeName(string)
 
     let root_instance_ref = self
-      .data
       .root_instance_ref
       .as_ref()
       .expect("No root instance")
@@ -347,9 +322,9 @@ impl<'a> Orchestrator<'a> {
         &mut root_instance_ref.borrow_mut(),
         connector_index,
       ),
-      self.data.instance_graph.clone(),
-      &mut self.data.context.queued_instance_ixs,
-      &self.data.components,
+      self.instance_graph.clone(),
+      &mut self.context.queued_instance_ixs,
+      &self.components,
     );
 
     self
@@ -379,7 +354,7 @@ impl<'a> Orchestrator<'a> {
         );
         instance
           .borrow_mut()
-          .signal_connector_in(instance_connector_ix.connector_ix);
+          .signal_connector_in(instance_connector_ix.component_ix);
         queued_instance_ixs.push(instance_connector_ix.instance_ix);
       }
     }
@@ -480,14 +455,13 @@ mod tests {
       .graph
       .add_edge(cell_b, cell_d, Edge::new_signal(0));
 
-    let mut data = OrchestratorData::new();
-    let mut orchestrator = Orchestrator::new(&mut data);
+    let mut orchestrator = Orchestrator::new();
     orchestrator
       .add_root_component(component)
       .signal_root_instance_connector_in(connector_in)
       .run();
 
-    assert_eq!(orchestrator.data.clock_cycle, 3);
+    assert_eq!(orchestrator.clock_cycle, 3);
   }
 
   #[traced_test]
@@ -547,14 +521,13 @@ mod tests {
       Dot::new(&component_2.graph) //, &[Config::EdgeNoLabel])
     );
 
-    let mut data = OrchestratorData::new();
-    let mut orchestrator = Orchestrator::new(&mut data);
+    let mut orchestrator = Orchestrator::new();
     orchestrator
       .add_root_component(component_2)
       .add_component(component_1)
       .signal_root_instance_connector_in(connector_in_component_2)
       .run();
 
-    assert_eq!(orchestrator.data.clock_cycle, 4);
+    assert_eq!(orchestrator.clock_cycle, 4);
   }
 }

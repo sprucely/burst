@@ -60,9 +60,9 @@ impl Hash for InstanceRefNode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstanceConnectorIx {
+pub struct InstanceComponentIx {
   pub instance_ix: NodeIndex,
-  pub connector_ix: NodeIndex,
+  pub component_ix: NodeIndex,
 }
 
 #[derive(Debug)]
@@ -100,7 +100,7 @@ impl ConnectorInNode {
 
 #[derive(Debug, Clone)]
 pub struct ConnectorOutNode {
-  pub to_instance_connector: Option<InstanceConnectorIx>,
+  pub to_instance_connector: Option<InstanceComponentIx>,
 }
 
 impl ConnectorOutNode {
