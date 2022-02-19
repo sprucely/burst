@@ -1,4 +1,3 @@
-use std::fmt;
 use std::rc::Rc;
 
 use crate::component::*;
@@ -8,6 +7,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use tracing::trace;
 
+#[derive(Debug)]
 pub struct ComponentInstance {
   pub id: Rc<str>,
   pub node_name: String,
@@ -19,36 +19,9 @@ pub struct ComponentInstance {
   instance_cycle: usize,
 }
 
-impl fmt::Debug for ComponentInstance {
-  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    write!(
-      f,
-      "ComponentInstance {{
-  id: {}
-  node_name: {}
-  component: {:?}
-  fired_nodes: {:?}
-  active_nodes: {:?}
-  staged_nodes: {:?}
-  incoming_signals: {:?}
-  instance_cycle: {}
-  signal_connector_sink: Sink<SignalRequest>
-}}",
-      self.id,
-      self.node_name,
-      self.component,
-      self.fired_nodes,
-      self.active_nodes,
-      self.staged_nodes,
-      self.incoming_signals,
-      self.instance_cycle,
-    )
-  }
-}
-
 // ComponentInstance is in charge of executing it's own entire step/lifecycle with staging and active cell buffers
 // rather than have that managed by a single global executor. This helps maintain locality of cells and their operands.
-// It will also help identify boundaries for splitting processing across mulcuidtiple threads.
+// It will also help identify boundaries for splitting processing across multiple threads.
 
 impl ComponentInstance {
   pub fn new(
