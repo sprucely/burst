@@ -74,7 +74,7 @@ pub enum InstanceConnectorRef<'a> {
 
 #[derive(Debug)]
 pub struct Orchestrator {
-  components: HashMap<String, Component>,
+  components: HashMap<Rc<str>, Component>,
   // TODO: (microoptimization) Sort instances topologically for cache locality purposes
   clock_cycle: usize,
   // keep track of all connections between component instances
@@ -123,7 +123,7 @@ impl Orchestrator {
   fn get_instance<'b>(
     instance_ref: &'b mut InstanceRef,
     instance_graph: Rc<RefCell<InstanceGraph>>,
-    components: &HashMap<String, Component>,
+    components: &HashMap<Rc<str>, Component>,
   ) -> Rc<RefCell<Instance>> {
     let (instance_ix, instance, instance_ref_node) =
       get_or_create_instance_graph_node(instance_ref, instance_graph.clone());
@@ -273,7 +273,7 @@ impl Orchestrator {
     context: &mut ExecutionContext,
     clock_cycle: &mut usize,
     instance_graph: Rc<RefCell<InstanceGraph>>,
-    components: &HashMap<String, Component>,
+    components: &HashMap<Rc<str>, Component>,
   ) -> bool {
     *clock_cycle += 1;
     context.start_cycle();
@@ -334,7 +334,7 @@ impl Orchestrator {
     instance_ref: &mut InstanceConnectorRef,
     instance_graph: Rc<RefCell<InstanceGraph>>,
     queued_instance_ixs: &mut Vec<NodeIndex>,
-    components: &HashMap<String, Component>,
+    components: &HashMap<Rc<str>, Component>,
   ) {
     match instance_ref {
       InstanceConnectorRef::InstanceRefNode(instance_ref_node, connector_index) => {
@@ -362,7 +362,7 @@ impl Orchestrator {
 }
 
 fn get_connector_index_by_name(
-  components: &HashMap<String, Component>,
+  components: &HashMap<Rc<str>, Component>,
   component_name: &str,
   connector_name: Rc<str>,
 ) -> NodeIndex {
@@ -437,7 +437,7 @@ mod tests {
   #[traced_test]
   #[test]
   fn it_works<'a>() {
-    let mut component = Component::new("AComponent".to_string());
+    let mut component = Component::new("AComponent");
 
     let connector_in = component
       .graph
@@ -468,7 +468,7 @@ mod tests {
   #[test]
   fn it_works2() {
     // Component1 is instantiated by and connected from Component2
-    let mut component_1 = Component::new("Component1".to_string());
+    let mut component_1 = Component::new("Component1");
     let connector_in_component_1 =
       component_1
         .graph
@@ -482,7 +482,7 @@ mod tests {
       Edge::new_signal(0),
     );
 
-    let mut component_2 = Component::new("Component2".to_string());
+    let mut component_2 = Component::new("Component2");
     let connector_in_component_2 =
       component_2
         .graph
@@ -497,7 +497,7 @@ mod tests {
       .graph
       .add_node(Node::Component(InstanceRefNode::new(
         "component_1".to_string(),
-        "Component1".to_string(),
+        component_1.name.clone(),
       )));
 
     component_2.graph.add_edge(

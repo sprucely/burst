@@ -190,7 +190,7 @@ mod tests {
   #[traced_test]
   #[test]
   fn it_works() {
-    let mut component = Component::new("AComponent".to_string());
+    let mut component = Component::new("AComponent");
 
     let cell_a = component.graph.add_node(Node::Cell(CellNode::one_shot()));
     let cell_b = component.graph.add_node(Node::Cell(CellNode::relay()));

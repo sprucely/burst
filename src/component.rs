@@ -30,12 +30,12 @@ pub enum Node {
 #[derive(Debug, Clone)]
 pub struct InstanceRefNode {
   pub node_name: String,
-  pub component_name: String,
+  pub component_name: Rc<str>,
   pub instance_ix: Option<NodeIndex>,
 }
 
 impl InstanceRefNode {
-  pub fn new(node_name: String, component_name: String) -> Self {
+  pub fn new(node_name: String, component_name: Rc<str>) -> Self {
     InstanceRefNode {
       node_name,
       component_name,
@@ -205,15 +205,15 @@ pub type ComponentGraph = Graph<Node, Edge>;
 
 #[derive(Debug, Clone)]
 pub struct Component {
-  pub name: String,
+  pub name: Rc<str>,
   pub graph: ComponentGraph,
   // cell_info_map: HashMap<String, CellInfo>,
 }
 
 impl Component {
-  pub fn new(name: String) -> Self {
+  pub fn new(name: &str) -> Self {
     Component {
-      name,
+      name: Rc::from(name),
       graph: Graph::new(),
       // cell_info_map: HashMap::new(),
     }
@@ -226,7 +226,7 @@ mod tests {
 
   #[test]
   fn it_works() {
-    let mut component = Component::new("AComponent".to_string());
+    let mut component = Component::new("AComponent");
 
     let cell_a = component
       .graph
